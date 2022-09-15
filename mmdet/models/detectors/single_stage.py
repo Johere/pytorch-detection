@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 
+import numpy as np
 import torch
 
 from mmdet.core import bbox2result
@@ -84,6 +85,28 @@ class SingleStageDetector(BaseDetector):
                                               gt_labels, gt_bboxes_ignore)
         return losses
 
+    def forward(self, img, img_metas, return_loss=True, single_output=False, **kwargs):
+        """Calls either :func:`forward_train` or :func:`forward_test` depending
+        on whether ``return_loss`` is ``True``.
+
+        Note this setting will change the expected inputs. When
+        ``return_loss=True``, img and img_meta are single-nested (i.e. Tensor
+        and List[dict]), and when ``resturn_loss=False``, img and img_meta
+        should be double nested (i.e.  List[Tensor], List[List[dict]]), with
+        the outer list indicating test time augmentations.
+        """
+        if torch.onnx.is_in_onnx_export():
+            assert len(img_metas) == 1
+            if single_output:
+                return self.onnx_export_single(img[0], img_metas[0])
+            else:
+                return self.onnx_export(img[0], img_metas[0])
+
+        if return_loss:
+            return self.forward_train(img, img_metas, **kwargs)
+        else:
+            return self.forward_test(img, img_metas, **kwargs)
+
     def simple_test(self, img, img_metas, rescale=False):
         """Test function without test-time augmentation.
 
@@ -149,23 +172,64 @@ class SingleStageDetector(BaseDetector):
             tuple[Tensor, Tensor]: dets of shape [N, num_det, 5]
                 and class labels of shape [N, num_det].
         """
-        x = self.extract_feat(img)
-        outs = self.bbox_head(x)
-        # get origin input shape to support onnx dynamic shape
+        x = self.backbone(img)
+        return x
+        # x = self.extract_feat(img)
+        # outs = self.bbox_head(x)
+        # # get origin input shape to support onnx dynamic shape
 
-        # get shape as tensor
-        img_shape = torch._shape_as_tensor(img)[2:]
-        img_metas[0]['img_shape_for_onnx'] = img_shape
-        # get pad input shape to support onnx dynamic shape for exporting
-        # `CornerNet` and `CentripetalNet`, which 'pad_shape' is used
-        # for inference
-        img_metas[0]['pad_shape_for_onnx'] = img_shape
+        # # get shape as tensor
+        # img_shape = torch._shape_as_tensor(img)[2:]
+        # img_metas[0]['img_shape_for_onnx'] = img_shape
+        # # get pad input shape to support onnx dynamic shape for exporting
+        # # `CornerNet` and `CentripetalNet`, which 'pad_shape' is used
+        # # for inference
+        # img_metas[0]['pad_shape_for_onnx'] = img_shape
 
-        if len(outs) == 2:
-            # add dummy score_factor
-            outs = (*outs, None)
-        # TODO Can we change to `get_bboxes` when `onnx_export` fail
-        det_bboxes, det_labels = self.bbox_head.onnx_export(
-            *outs, img_metas, with_nms=with_nms)
+        # if len(outs) == 2:
+        #     # add dummy score_factor
+        #     outs = (*outs, None)
+        # # TODO Can we change to `get_bboxes` when `onnx_export` fail
+        # det_bboxes, det_labels = self.bbox_head.onnx_export(
+        #     *outs, img_metas, with_nms=with_nms)
 
-        return det_bboxes, det_labels
+        # return det_bboxes, det_labels
+
+    def onnx_export_single(self, img, img_metas, with_nms=True):
+        det_bboxes, det_labels = self.onnx_export(img, img_metas, with_nms)
+        '''
+        image_ids.shape
+            torch.Size([1, 200, 1])
+        det_labels.shape
+            torch.Size([1, 200, 1])
+        det_bboxes.shape
+            torch.Size([1, 200, 5])
+        '''
+        batch, _, input_h, input_w = img.shape
+        det_labels = det_labels.type_as(det_bboxes)
+
+        '''
+        positive category id should start from 1.
+        '''
+        labels = det_labels.reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 1)
+        labels[..., 0] = labels[..., 0] + 1
+
+        assert batch == 1, 'unsupported batchsize: {}'.format(batch)
+        image_ids = torch.full_like(labels, 0)
+
+        scores = det_bboxes[:, :, -1].reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 1)
+
+        '''
+        bounding boxes range to [0, 1]
+        '''
+        bboxes = det_bboxes[:, :, :4].reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 4)
+        bboxes[..., 0] = bboxes[..., 0] / input_w
+        bboxes[..., 1] = bboxes[..., 1] / input_h
+        bboxes[..., 2] = bboxes[..., 2] / input_w
+        bboxes[..., 3] = bboxes[..., 3] / input_h
+
+        '''
+        [image_id, label, conf, x_min, y_min, x_max, y_max]
+        '''
+        output = torch.cat([image_ids, labels, scores, bboxes], -1)
+        return output

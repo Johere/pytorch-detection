@@ -24,8 +24,8 @@ def pytorch2onnx(model,
                  test_img=None,
                  do_simplify=False,
                  dynamic_export=None,
-                 skip_postprocess=False):
-
+                 skip_postprocess=False,
+                 single_output=False):
     input_config = {
         'input_shape': input_shape,
         'input_path': input_img,
@@ -60,29 +60,47 @@ def pytorch2onnx(model,
         model.forward,
         img_metas=img_meta_list,
         return_loss=False,
+        single_output=single_output,
         rescale=False)
 
-    output_names = ['dets', 'labels']
+    if single_output:
+        output_names = ['DetectionOutput_']
+    else:
+        output_names = ['dets', 'labels']
+
     if model.with_mask:
         output_names.append('masks')
     input_name = 'input'
     dynamic_axes = None
     if dynamic_export:
-        dynamic_axes = {
-            input_name: {
-                0: 'batch',
-                2: 'height',
-                3: 'width'
-            },
-            'dets': {
-                0: 'batch',
-                1: 'num_dets',
-            },
-            'labels': {
-                0: 'batch',
-                1: 'num_dets',
-            },
-        }
+        if single_output:
+            dynamic_axes = {
+                input_name: {
+                    0: 'batch',
+                    2: 'height',
+                    3: 'width'
+                },
+                'DetectionOutput_': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+            }
+        else:
+            dynamic_axes = {
+                input_name: {
+                    0: 'batch',
+                    2: 'height',
+                    3: 'width'
+                },
+                'dets': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+                'labels': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+            }
         if model.with_mask:
             dynamic_axes['masks'] = {0: 'batch', 1: 'num_dets'}
 
@@ -288,6 +306,11 @@ def parse_args():
         help='Whether to export model without post process. Experimental '
         'option. We do not guarantee the correctness of the exported '
         'model.')
+    parser.add_argument(
+        '--single_output',
+        action='store_true',
+        help='concat dets and labels as single output, shape: [1, 1, N, 7]'
+             'last axis stands for: [image_id, label, conf, x_min, y_min, x_max, y_max]')
     args = parser.parse_args()
     return args
 
@@ -323,6 +346,7 @@ if __name__ == '__main__':
     # build the model and load checkpoint
     model = build_model_from_cfg(args.config, args.checkpoint,
                                  args.cfg_options)
+    print(model)
 
     if not args.input_img:
         args.input_img = osp.join(osp.dirname(__file__), '../../demo/demo.jpg')
@@ -342,7 +366,8 @@ if __name__ == '__main__':
         test_img=args.test_img,
         do_simplify=args.simplify,
         dynamic_export=args.dynamic_export,
-        skip_postprocess=args.skip_postprocess)
+        skip_postprocess=args.skip_postprocess,
+        single_output=args.single_output)
 
     # Following strings of text style are from colorama package
     bright_style, reset_style = '\x1b[1m', '\x1b[0m'

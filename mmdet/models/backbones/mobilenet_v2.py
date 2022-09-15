@@ -53,7 +53,10 @@ class MobileNetV2(BaseModule):
                  norm_eval=False,
                  with_cp=False,
                  pretrained=None,
-                 init_cfg=None):
+                 init_cfg=None,
+                 first_channel=32,
+                 last_channel=1280,
+                 predefined_arch_settings=None):
         super(MobileNetV2, self).__init__(init_cfg)
 
         self.pretrained = pretrained
@@ -92,7 +95,7 @@ class MobileNetV2(BaseModule):
         self.norm_eval = norm_eval
         self.with_cp = with_cp
 
-        self.in_channels = make_divisible(32 * widen_factor, 8)
+        self.in_channels = make_divisible(first_channel * widen_factor, 8)
 
         self.conv1 = ConvModule(
             in_channels=3,
@@ -105,6 +108,8 @@ class MobileNetV2(BaseModule):
             act_cfg=self.act_cfg)
 
         self.layers = []
+        if predefined_arch_settings is not None:
+            self.arch_settings = predefined_arch_settings
 
         for i, layer_cfg in enumerate(self.arch_settings):
             expand_ratio, channel, num_blocks, stride = layer_cfg
@@ -118,10 +123,10 @@ class MobileNetV2(BaseModule):
             self.add_module(layer_name, inverted_res_layer)
             self.layers.append(layer_name)
 
-        if widen_factor > 1.0:
-            self.out_channel = int(1280 * widen_factor)
+        if not widen_factor == 1.0:
+            self.out_channel = int(last_channel * widen_factor)
         else:
-            self.out_channel = 1280
+            self.out_channel = last_channel
 
         layer = ConvModule(
             in_channels=self.in_channels,

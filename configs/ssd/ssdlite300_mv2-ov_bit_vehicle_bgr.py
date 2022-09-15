@@ -1,0 +1,183 @@
+_base_ = [
+    '../_base_/default_runtime.py'
+]
+input_size = 300
+model = dict(
+    type='SingleStageDetector',
+    backbone=dict(
+        type='MobileNetV2',
+        widen_factor=1.0,
+        out_indices=(4, 7),
+        norm_cfg=dict(type='BN', eps=0.001, momentum=0.03),
+        init_cfg=dict(type='TruncNormal', layer='Conv2d', std=0.03),
+        first_channel=16,
+        last_channel=112,
+        predefined_arch_settings=[[1, 16, 1, 1], [6, 16, 2, 2], [6, 16, 3, 2],
+                                  [6, 24, 4, 2], [6, 32, 3, 1], [6, 56, 3, 2],
+                                  [6, 112, 1, 1]]
+        ),
+    neck=dict(
+        type='SSDNeck',
+        in_channels=(32, 112),
+        out_channels=(32, 112, 192, 96, 96, 48),
+        level_strides=(2, 2, 2, 2),
+        level_paddings=(1, 1, 1, 1),
+        l2_norm_scale=None,
+        use_depthwise=True,
+        norm_cfg=dict(type='BN', eps=0.001, momentum=0.03),
+        act_cfg=dict(type='ReLU6'),
+        init_cfg=dict(type='TruncNormal', layer='Conv2d', std=0.03)),
+    bbox_head=dict(
+        type='SSDHead',
+        in_channels=(32, 112, 192, 96, 96, 48),
+        num_classes=1,
+        use_depthwise=True,
+        norm_cfg=dict(type='BN', eps=0.001, momentum=0.03),
+        act_cfg=dict(type='ReLU6'),
+        init_cfg=dict(type='Normal', layer='Conv2d', std=0.001),
+
+        # set anchor size manually instead of using the predefined
+        # SSD300 setting.
+        anchor_generator=dict(
+            type='SSDAnchorGenerator',
+            input_size=input_size,
+            scale_major=False,
+            basesize_ratio_range=(0.15, 0.9),
+            strides=[8, 16, 32, 64, 100, 300],
+            ratios=[[2], [2, 3], [2, 3], [2, 3], [2], [2]]),
+        bbox_coder=dict(
+            type='DeltaXYWHBBoxCoder',
+            target_means=[.0, .0, .0, .0],
+            target_stds=[0.1, 0.1, 0.2, 0.2])),
+    # model training and testing settings
+    train_cfg=dict(
+        assigner=dict(
+            type='MaxIoUAssigner',
+            pos_iou_thr=0.5,
+            neg_iou_thr=0.5,
+            min_pos_iou=0.,
+            ignore_iof_thr=-1,
+            gt_max_assign_all=False),
+        smoothl1_beta=1.,
+        allowed_border=-1,
+        pos_weight=-1,
+        neg_pos_ratio=3,
+        debug=False),
+    test_cfg=dict(
+        nms_pre=1000,
+        nms=dict(type='nms', iou_threshold=0.45),
+        min_bbox_size=0,
+        score_thr=0.02,
+        max_per_img=200))
+cudnn_benchmark = True
+
+# dataset settings
+dataset_type = 'HybridDataset'
+data_root = '/mnt/disk1/data_for_linjiaojiao/datasets/'
+img_norm_cfg = dict(
+    # mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+    mean=[103.530, 116.280, 123.675], std=[57.375, 57.12, 58.395], to_rgb=False)
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True),
+    dict(
+        type='Expand',
+        mean=img_norm_cfg['mean'],
+        to_rgb=img_norm_cfg['to_rgb'],
+        ratio_range=(1, 4)),
+    dict(
+        type='MinIoURandomCrop',
+        min_ious=(0.1, 0.3, 0.5, 0.7, 0.9),
+        min_crop_size=0.3),
+    dict(type='Resize', img_scale=(input_size, input_size), keep_ratio=False),
+    dict(type='RandomFlip', flip_ratio=0.5),
+    dict(
+        type='PhotoMetricDistortion',
+        brightness_delta=32,
+        contrast_range=(0.5, 1.5),
+        saturation_range=(0.5, 1.5),
+        hue_delta=18),
+    dict(type='Normalize', **img_norm_cfg),
+    dict(type='Pad', size_divisor=input_size),
+    dict(type='DefaultFormatBundle'),
+    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels']),
+]
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(
+        type='MultiScaleFlipAug',
+        img_scale=(input_size, input_size),
+        flip=False,
+        transforms=[
+            dict(type='Resize', keep_ratio=False),
+            dict(type='Normalize', **img_norm_cfg),
+            dict(type='Pad', size_divisor=input_size),
+            dict(type='ImageToTensor', keys=['img']),
+            dict(type='Collect', keys=['img']),
+        ])
+]
+data = dict(
+    samples_per_gpu=24,
+    workers_per_gpu=0,
+    train=[
+            dict(
+                _delete_=True,
+                type='RepeatDataset',  # use RepeatDataset to speed up training
+                times=1,
+                dataset=dict(
+                    type=dataset_type,
+                    ann_file=data_root + 'UA_DETRAC_fps5/train_meta.list',
+                    img_prefix=data_root + 'UA_DETRAC_fps5/images/',
+                    pipeline=train_pipeline),
+                separate_eval=False
+            ),
+            dict(
+                _delete_=True,
+                type='RepeatDataset',  # use RepeatDataset to speed up training
+                times=1,
+                dataset=dict(
+                    type=dataset_type,
+                    ann_file=data_root + 'BITVehicle/train_meta.list',
+                    img_prefix=data_root + 'BITVehicle/images/',
+                    pipeline=train_pipeline),
+                separate_eval=False
+            ),
+        ],
+    val=dict(
+        type=dataset_type,
+        ann_file=data_root + 'UA_DETRAC_fps5/val_meta.list',
+        img_prefix=data_root + 'UA_DETRAC_fps5/images/',
+        pipeline=test_pipeline),
+    test=dict(
+        type=dataset_type,
+        ann_file=data_root + 'BITVehicle/test_meta.list',
+        img_prefix=data_root + 'BITVehicle/images/',
+        pipeline=test_pipeline))
+
+# optimizer
+optimizer = dict(type='SGD', lr=0.015, momentum=0.9, weight_decay=4.0e-5)
+optimizer_config = dict(grad_clip=None)
+
+# learning policy
+lr_config = dict(
+    policy='CosineAnnealing',
+    warmup='linear',
+    warmup_iters=500,
+    warmup_ratio=0.001,
+    min_lr=0)
+runner = dict(type='EpochBasedRunner', max_epochs=120)
+
+# Avoid evaluation and saving weights too frequently
+evaluation = dict(interval=5, metric='mAP')
+checkpoint_config = dict(interval=5)
+custom_hooks = [
+    dict(type='NumClassCheckHook'),
+    dict(type='CheckInvalidLossHook', interval=50, priority='VERY_LOW')
+]
+# yapf:disable
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        dict(type='TensorboardLoggerHook')
+    ])

@@ -1,12 +1,15 @@
 _base_ = [
-    '../_base_/models/ssd300.py', '../_base_/datasets/coco_detection.py',
-    '../_base_/schedules/schedule_2x.py', '../_base_/default_runtime.py'
+    '../_base_/models/ssd300_vehicle.py',
+    '../_base_/schedules/schedule_2x.py',
+    '../_base_/default_runtime.py'
 ]
 # dataset settings
-dataset_type = 'CocoDataset'
+dataset_type = 'HybridDataset'
 # data_root = 'data/coco/'
-data_root = '/mnt/disk1/data_for_linjiaojiao/datasets/coco/'
-img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[1, 1, 1], to_rgb=True)
+data_root = '/mnt/disk1/data_for_linjiaojiao/datasets/'
+img_norm_cfg = dict(
+    # mean=[123.675, 116.28, 103.53], std=[1, 1, 1], to_rgb=True)
+    mean=[103.530, 116.280, 123.675], std=[1, 1, 1], to_rgb=False)
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
@@ -53,14 +56,18 @@ data = dict(
         times=5,
         dataset=dict(
             type=dataset_type,
-            ann_file=data_root + 'annotations/instances_train2017.json',
-            img_prefix=data_root + 'images/train2017/',
+            ann_file=data_root + 'UA_DETRAC_fps5/train_meta.list',
+            img_prefix=data_root + 'UA_DETRAC_fps5/images/',
             pipeline=train_pipeline)),
-    val=dict(ann_file=data_root + 'annotations/instances_val2017.json',
-            img_prefix=data_root + 'images/val2017/',
+    val=dict(
+            type=dataset_type,
+            ann_file=data_root + 'UA_DETRAC_fps5/val_meta.list',
+            img_prefix=data_root + 'UA_DETRAC_fps5/images/',
             pipeline=test_pipeline),
-    test=dict(ann_file=data_root + 'annotations/instances_test2017.json',
-            img_prefix=data_root + 'images/test2017/',
+    test=dict(
+            type=dataset_type,
+            ann_file=data_root + 'BITVehicle/bit_vehicle_annotation.list',
+            img_prefix=data_root + 'BITVehicle/images/',
             pipeline=test_pipeline))
 # optimizer
 optimizer = dict(type='SGD', lr=2e-3, momentum=0.9, weight_decay=5e-4)
@@ -69,3 +76,21 @@ custom_hooks = [
     dict(type='NumClassCheckHook'),
     dict(type='CheckInvalidLossHook', interval=50, priority='VERY_LOW')
 ]
+# learning policy
+lr_config = dict(
+    policy='step',
+    warmup='linear',
+    warmup_iters=500,
+    warmup_ratio=0.001,
+    step=[16, 22])
+runner = dict(type='EpochBasedRunner', max_epochs=24)
+
+# evaluation
+evaluation = dict(interval=2, metric='mAP')
+# yapf:disable
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        dict(type='TensorboardLoggerHook')
+    ])

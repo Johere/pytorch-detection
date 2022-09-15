@@ -173,7 +173,6 @@ class AnchorGenerator:
             y_center = self.center_offset * h
         else:
             x_center, y_center = center
-
         h_ratios = torch.sqrt(ratios)
         w_ratios = 1 / h_ratios
         if self.scale_major:
@@ -496,7 +495,8 @@ class SSDAnchorGenerator(AnchorGenerator):
                  max_sizes=None,
                  basesize_ratio_range=(0.15, 0.9),
                  input_size=300,
-                 scale_major=True):
+                 scale_major=True,
+                 ov_anchors=True):
         assert len(strides) == len(ratios)
         assert not (min_sizes is None) ^ (max_sizes is None)
         self.strides = [_pair(stride) for stride in strides]
@@ -548,7 +548,7 @@ class SSDAnchorGenerator(AnchorGenerator):
                     'Only support 300 or 512 in SSDAnchorGenerator when '
                     'not setting min_sizes and max_sizes, '
                     f'got {self.input_size}.')
-
+        # import pdb; pdb.set_trace()
         assert len(min_sizes) == len(max_sizes) == len(strides)
 
         anchor_ratios = []
@@ -557,7 +557,11 @@ class SSDAnchorGenerator(AnchorGenerator):
             scales = [1., np.sqrt(max_sizes[k] / min_sizes[k])]
             anchor_ratio = [1.]
             for r in ratios[k]:
-                anchor_ratio += [1 / r, r]  # 4 or 6 ratio
+                # TODO
+                if ov_anchors:
+                    anchor_ratio += [r]  # 4 or 6 ratio
+                else:        
+                    anchor_ratio += [1 / r, r]  # 4 or 6 ratio
             anchor_ratios.append(torch.Tensor(anchor_ratio))
             anchor_scales.append(torch.Tensor(scales))
 
@@ -565,6 +569,7 @@ class SSDAnchorGenerator(AnchorGenerator):
         self.scales = anchor_scales
         self.ratios = anchor_ratios
         self.scale_major = scale_major
+        self.ov_anchors = ov_anchors
         self.center_offset = 0
         self.base_anchors = self.gen_base_anchors()
 
@@ -582,10 +587,12 @@ class SSDAnchorGenerator(AnchorGenerator):
                 scales=self.scales[i],
                 ratios=self.ratios[i],
                 center=self.centers[i])
+
             indices = list(range(len(self.ratios[i])))
             indices.insert(1, len(indices))
+            # !!! actual anchor num: len(self.ratios[i]) + 1
             base_anchors = torch.index_select(base_anchors, 0,
-                                              torch.LongTensor(indices))
+                                                torch.LongTensor(indices))
             multi_level_base_anchors.append(base_anchors)
         return multi_level_base_anchors
 
@@ -596,6 +603,7 @@ class SSDAnchorGenerator(AnchorGenerator):
         repr_str += f'{indent_str}strides={self.strides},\n'
         repr_str += f'{indent_str}scales={self.scales},\n'
         repr_str += f'{indent_str}scale_major={self.scale_major},\n'
+        repr_str += f'{indent_str}ov_anchors={self.ov_anchors},\n'
         repr_str += f'{indent_str}input_size={self.input_size},\n'
         repr_str += f'{indent_str}scales={self.scales},\n'
         repr_str += f'{indent_str}ratios={self.ratios},\n'

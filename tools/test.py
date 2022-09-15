@@ -52,6 +52,7 @@ def parse_args():
         help='Format the output results without perform evaluation. It is'
         'useful when you want to format the result to a specific format and '
         'submit it to the test server')
+    parser.add_argument('--save-dir', help='the dir to save results')
     parser.add_argument(
         '--eval',
         type=str,
@@ -242,9 +243,17 @@ def main():
             print(f'\nwriting results to {args.out}')
             mmcv.dump(outputs, args.out)
         kwargs = {} if args.eval_options is None else args.eval_options
-        if args.format_only:
-            dataset.format_results(outputs, **kwargs)
-        if args.eval:
+        # if args.format_only:
+        # always save format results
+        if args.save_dir is not None:
+            os.makedirs(args.save_dir, exist_ok=True)
+            dataset.format_results(outputs, save_dir=args.save_dir, **kwargs)
+            save_to = args.save_dir
+        else:
+            _, tmp_dir = dataset.format_results(outputs, **kwargs)
+            save_to = tmp_dir.name
+        print(f'\nformat results and saved to: {save_to}')
+        if not args.format_only and args.eval:
             eval_kwargs = cfg.get('evaluation', {}).copy()
             # hard-code way to remove EvalHook args
             for key in [

@@ -83,6 +83,23 @@ class CocoDataset(CustomDataset):
             info['filename'] = info['file_name']
             data_infos.append(info)
             ann_ids = self.coco.get_ann_ids(img_ids=[i])
+            '''
+            (Pdb) info
+            {
+                'license': 3, 
+                'file_name': '000000391895.jpg', 
+                'coco_url': 'http://images.cocodataset.org/train2017/000000391895.jpg', 
+                'height': 360, 
+                'width': 640, 
+                'date_captured': '2013-11-14 11:18:45', 
+                'flickr_url': 'http://farm9.staticflickr.com/8186/8119368305_4e622c8349_z.jpg', 
+                'id': 391895, 
+                'filename': '000000391895.jpg'
+            }
+            (Pdb) ann_ids
+            [151091, 202758, 1260346, 1766676]
+
+            '''
             total_ann_ids.extend(ann_ids)
         assert len(set(total_ann_ids)) == len(
             total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
@@ -101,6 +118,17 @@ class CocoDataset(CustomDataset):
         img_id = self.data_infos[idx]['id']
         ann_ids = self.coco.get_ann_ids(img_ids=[img_id])
         ann_info = self.coco.load_anns(ann_ids)
+        '''
+         (Pdb) ann_info
+         [{'segmentation': [[...]], 'area': 36192.070850000004, 'iscrowd': 0, 'image_id': 100530, 'bbox': [181.21, 89.53, 157.49, 388.31], 'category_id': 88, 'id': 1160738}]
+
+         (Pdb) img_id
+         100530
+
+         (Pdb) ann_ids
+         [62524, 1160738]
+
+         '''
         return self._parse_ann_info(self.data_infos[idx], ann_info)
 
     def get_cat_ids(self, idx):

@@ -578,7 +578,6 @@ def eval_map(det_results,
         extra_length = 0.
     else:
         extra_length = 1.
-
     num_imgs = len(det_results)
     num_scales = len(scale_ranges) if scale_ranges is not None else 1
     num_classes = len(det_results[0])  # positive class num

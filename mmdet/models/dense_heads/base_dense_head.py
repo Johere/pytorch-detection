@@ -411,9 +411,12 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         assert len(cls_scores) == len(bbox_preds) == len(mlvl_priors)
         device = cls_scores[0].device
         batch_size = cls_scores[0].shape[0]
+
         # convert to tensor to keep tracing
+        # nms_pre_tensor = torch.tensor(
+        #     cfg.get('nms_pre', -1), device=device, dtype=torch.long)
         nms_pre_tensor = torch.tensor(
-            cfg.get('nms_pre', -1), device=device, dtype=torch.long)
+            cfg.get('deploy_nms_pre', -1), device=device, dtype=torch.long)
 
         # e.g. Retina, FreeAnchor, etc.
         if score_factors is None:
@@ -429,6 +432,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
 
         mlvl_batch_bboxes = []
         mlvl_scores = []
+        mlvl_batch_priors = []
 
         for cls_score, bbox_pred, score_factors, priors in zip(
                 mlvl_cls_scores, mlvl_bbox_preds, mlvl_score_factor,
@@ -451,16 +455,16 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
             bbox_pred = bbox_pred.permute(0, 2, 3,
                                           1).reshape(batch_size, -1, 4)
             priors = priors.expand(batch_size, -1, priors.size(-1))
+            
             # Get top-k predictions
             from mmdet.core.export import get_k_for_topk
             nms_pre = get_k_for_topk(nms_pre_tensor, bbox_pred.shape[1])
-            if nms_pre > 0:
-
+            # import pdb; pdb.set_trace()
+            if 0 < nms_pre < bbox_pred.shape[1]:
+                
                 if with_score_factors:
                     nms_pre_score = (nms_pre_score * score_factors[..., None])
-                else:
-                    nms_pre_score = nms_pre_score
-
+                
                 # Get maximum scores for foreground classes.
                 if self.use_sigmoid_cls:
                     max_scores, _ = nms_pre_score.max(-1)
@@ -469,6 +473,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                     # since mmdet v2.0
                     # BG cat_id: num_class
                     max_scores, _ = nms_pre_score[..., :-1].max(-1)
+                
                 _, topk_inds = max_scores.topk(nms_pre)
 
                 batch_inds = torch.arange(
@@ -476,28 +481,37 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                         -1, 1).expand_as(topk_inds).long()
                 # Avoid onnx2tensorrt issue in https://github.com/NVIDIA/TensorRT/issues/1134 # noqa: E501
                 transformed_inds = bbox_pred.shape[1] * batch_inds + topk_inds
+                # priors: generated anchors
                 priors = priors.reshape(
                     -1, priors.size(-1))[transformed_inds, :].reshape(
                         batch_size, -1, priors.size(-1))
                 bbox_pred = bbox_pred.reshape(-1,
-                                              4)[transformed_inds, :].reshape(
-                                                  batch_size, -1, 4)
+                                            4)[transformed_inds, :].reshape(
+                                                batch_size, -1, 4)
                 scores = scores.reshape(
                     -1, self.cls_out_channels)[transformed_inds, :].reshape(
                         batch_size, -1, self.cls_out_channels)
+
                 if with_score_factors:
                     score_factors = score_factors.reshape(
                         -1, 1)[transformed_inds].reshape(batch_size, -1)
+            
+            # bboxes = self.bbox_coder.decode(
+            #     priors, bbox_pred, max_shape=img_shape)
 
-            bboxes = self.bbox_coder.decode(
-                priors, bbox_pred, max_shape=img_shape)
+            # mlvl_batch_bboxes.append(bboxes)
+            mlvl_batch_bboxes.append(bbox_pred)
+            mlvl_batch_priors.append(priors)
 
-            mlvl_batch_bboxes.append(bboxes)
             mlvl_scores.append(scores)
             if with_score_factors:
                 mlvl_score_factors.append(score_factors)
 
-        batch_bboxes = torch.cat(mlvl_batch_bboxes, dim=1)
+        # batch_bboxes = torch.cat(mlvl_batch_bboxes, dim=1)
+        batch_pred_bboxes = torch.cat(mlvl_batch_bboxes, dim=1)
+        batch_priors = torch.cat(mlvl_batch_priors, dim=1)
+        batch_bboxes = self.bbox_coder.decode(
+            batch_priors, batch_pred_bboxes, max_shape=img_shape)
         batch_scores = torch.cat(mlvl_scores, dim=1)
         if with_score_factors:
             batch_score_factors = torch.cat(mlvl_score_factors, dim=1)
