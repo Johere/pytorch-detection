@@ -85,7 +85,7 @@ class SingleStageDetector(BaseDetector):
                                               gt_labels, gt_bboxes_ignore)
         return losses
 
-    def forward(self, img, img_metas, return_loss=True, single_output=False, **kwargs):
+    def forward(self, img, img_metas, return_loss=True, output_format=None, **kwargs):
         """Calls either :func:`forward_train` or :func:`forward_test` depending
         on whether ``return_loss`` is ``True``.
 
@@ -94,11 +94,15 @@ class SingleStageDetector(BaseDetector):
         and List[dict]), and when ``resturn_loss=False``, img and img_meta
         should be double nested (i.e.  List[Tensor], List[List[dict]]), with
         the outer list indicating test time augmentations.
+        output_format: ['single_output', 'openvino_op', None]
         """
         if torch.onnx.is_in_onnx_export():
             assert len(img_metas) == 1
-            if single_output:
+            if output_format == 'single_output':
                 return self.onnx_export_single(img[0], img_metas[0])
+            elif output_format == 'openvino_op':
+                # return original output, do not handle nms
+                return self.onnx_export_openvino(img[0], img_metas[0])
             else:
                 return self.onnx_export(img[0], img_metas[0])
 
@@ -173,27 +177,155 @@ class SingleStageDetector(BaseDetector):
                 and class labels of shape [N, num_det].
         """
         x = self.backbone(img)
-        return x
-        # x = self.extract_feat(img)
-        # outs = self.bbox_head(x)
-        # # get origin input shape to support onnx dynamic shape
+        # return x
+        x = self.extract_feat(img)
+        outs = self.bbox_head(x)
+        # get origin input shape to support onnx dynamic shape
 
-        # # get shape as tensor
-        # img_shape = torch._shape_as_tensor(img)[2:]
-        # img_metas[0]['img_shape_for_onnx'] = img_shape
-        # # get pad input shape to support onnx dynamic shape for exporting
-        # # `CornerNet` and `CentripetalNet`, which 'pad_shape' is used
-        # # for inference
-        # img_metas[0]['pad_shape_for_onnx'] = img_shape
+        # get shape as tensor
+        img_shape = torch._shape_as_tensor(img)[2:]
+        img_metas[0]['img_shape_for_onnx'] = img_shape
+        # get pad input shape to support onnx dynamic shape for exporting
+        # `CornerNet` and `CentripetalNet`, which 'pad_shape' is used
+        # for inference
+        img_metas[0]['pad_shape_for_onnx'] = img_shape
 
-        # if len(outs) == 2:
-        #     # add dummy score_factor
-        #     outs = (*outs, None)
-        # # TODO Can we change to `get_bboxes` when `onnx_export` fail
-        # det_bboxes, det_labels = self.bbox_head.onnx_export(
-        #     *outs, img_metas, with_nms=with_nms)
+        if len(outs) == 2:
+            # add dummy score_factor
+            outs = (*outs, None)
+        # TODO Can we change to `get_bboxes` when `onnx_export` fail
+        det_bboxes, det_labels = self.bbox_head.onnx_export(
+            *outs, img_metas, with_nms=with_nms)
 
-        # return det_bboxes, det_labels
+        return det_bboxes, det_labels
+
+    def onnx_export_openvino(self, img, img_metas):
+        
+        '''
+        det_bboxes.shape: torch.Size([1, 1204, 4])
+        det_scores.shape: torch.Size([1, 1204, 2])
+        batch_priors.shape: torch.Size([1, 1204, 4])
+        '''
+        [det_bboxes, batch_priors], det_scores  = self.onnx_export(img, img_metas, with_nms=False)
+        '''
+        inputs needed by openvino op: DetectiongOutput_
+        [1] DetectionOutput_loc_: 2D input tensor with box logits with shape [N, num_prior_boxes * num_loc_classes * 4]. 
+            num_loc_classes is equal to num_classes when share_location is 0 or its equal to 1 otherwise
+        [2] DetectionOutput_conf_: 2D input tensor with class predictions with shape [N, num_prior_boxes * num_classes].
+        '''
+        batch, _, input_h, input_w = img.shape
+        
+        '''
+        bounding boxes range to [0, 1]
+        '''
+        batch_priors[..., 0] = batch_priors[..., 0] / input_w
+        batch_priors[..., 1] = batch_priors[..., 1] / input_h
+        batch_priors[..., 2] = batch_priors[..., 2] / input_w
+        batch_priors[..., 3] = batch_priors[..., 3] / input_h
+
+        '''
+        
+        det_bboxes.shape: torch.Size([1, 4816])
+        det_scores.shape: torch.Size([1, 1204*2])
+        batch_priors.shape: torch.Size([1, 1, 4816])
+        '''
+        bboxes = det_bboxes.reshape(batch, -1)
+        scores = det_scores.reshape(batch, -1)
+        priors = batch_priors.reshape(batch, 1, -1)
+
+        # _i
+        # category starts from 1
+        num_classes = int(self.bbox_head.num_classes + 1)
+        keep_top_k = 200
+        top_k = 400
+        # stds & means for predicted bboxes are already encoded into `det_bboxes`
+        variance_encoded_in_target = 1
+        background_label_id = -1 if num_classes == 1 else 0
+
+        # _f
+        nms_threshold = 0.5
+        confidence_threshold = 0.05
+
+        '''
+        normalized(default as False): if Ture, input_width and input_height will be fixed as 1 (i.e. bboxes are normalized in 0~1)
+        '''
+        # _i
+        # normalized = False
+        # input_height = int(input_h)
+        # input_width = int(input_w)
+        normalized = True
+        input_height = 1
+        input_width = 1
+        share_location = True
+        clip_before_nms = True
+        clip_after_nms = False
+
+        # _s
+        '''
+        > CORNER:
+            new_xmin = prior_xmin + loc_xmin;
+            new_ymin = prior_ymin + loc_ymin;
+            new_xmax = prior_xmax + loc_xmax;
+            new_ymax = prior_ymax + loc_ymax;
+        > CENTER_SIZE:
+            prior_width    =  prior_xmax - prior_xmin;
+            prior_height   =  prior_ymax - prior_ymin;
+            prior_center_x = (prior_xmin + prior_xmax) / 2.0f;
+            prior_center_y = (prior_ymin + prior_ymax) / 2.0f;
+            decode_bbox_center_x = loc_xmin * prior_width  + prior_center_x;
+            decode_bbox_center_y = loc_ymin * prior_height + prior_center_y;
+            decode_bbox_width  = std::exp(loc_xmax) * prior_width;
+            decode_bbox_height = std::exp(loc_ymax) * prior_height;
+        '''
+        code_type = "CENTER_SIZE"
+        # code_type = "CORNER"
+
+        from mmdet.core.ops import openvino_detection_output_forward
+        openvino__output = openvino_detection_output_forward(bboxes, scores, priors, None, None, 
+                            #  attrs
+                            num_classes, keep_top_k, top_k, background_label_id,
+                            input_height, input_width,
+                            nms_threshold, confidence_threshold,
+                            normalized, share_location, clip_before_nms, clip_after_nms, 
+                            code_type, variance_encoded_in_target)
+
+        return openvino__output
+
+        # return bboxes, scores, priors
+        # return torch.cat([bboxes, scores, priors], -1)
+        
+        # # pip install openvino
+        # import onnxruntime
+        # from openvino.runtime.opset1 import detection_output
+        # from openvino.runtime import Output
+        # """
+        # openvino.runtime.opset1.detection_output(box_logits: openvino.pyopenvino.Node, class_preds: openvino.pyopenvino.Node, proposals: openvino.pyopenvino.Node, attrs: dict, aux_class_preds: Union[openvino.pyopenvino.Node, int, float, numpy.ndarray] = None, aux_box_preds: Union[openvino.pyopenvino.Node, int, float, numpy.ndarray] = None, name: Optional[str] = None) → openvino.pyopenvino.Node
+        # Generate the detection output using information on location and confidence predictions.
+
+        # > Parameters
+        # box_logits: The 2D input tensor with box logits.
+        # class_preds: The 2D input tensor with class predictions.
+        # proposals: The 3D input tensor with proposals.
+        # attrs: The dictionary containing key, value pairs for attributes.
+        # aux_class_preds: The 2D input tensor with additional class predictions information.
+        # aux_box_preds: The 2D input tensor with additional box predictions information.
+        # name: Optional name for the output node.
+
+        # > Returns
+        # Node representing DetectionOutput operation.
+        # Available attributes are:
+        # """
+        # batch_height = np.array([input_h])
+        # batch_width = np.array([input_w])
+        # attrs = {
+        #     'num_classes': 1, 'keep_top_k': 200, 'top_k': 400,'nms_threshold': 0.45, 'normalized': True, 'clip_before_nms': True, 
+        #     'input_height': batch_height, 'input_width': batch_width, 'share_location': True, 'confidence_threshold': 0.009,
+        #     'clip_before_nms':False, 'clip_after_nms': False,
+        # }
+        # import pdb; pdb.set_trace()
+        # output = detection_output(Output(bboxes), Output(scores), proposals=Output(priors), attrs=attrs)
+        
+        # return output
 
     def onnx_export_single(self, img, img_metas, with_nms=True):
         det_bboxes, det_labels = self.onnx_export(img, img_metas, with_nms)

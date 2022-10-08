@@ -9,7 +9,7 @@ export TMPDIR=/dev/shm
 #export CUDA_VISIBLE_DEVICES='0,1'
 
 EXP_NAME=${1-debug}
-CONFIG_FILE=${2-${ROOT}/configs/ssd/ssdlite_mv2_bit_vehicle.py}
+CONFIG_FILE=${2-${ROOT}/configs/ssd/ssdlite_mv2-ov-anchors_bit_vehicle_bgr.py}
 GPUS=${3-'0,1,2,3'}
 # get gpu-nums
 gpu_ids=(${GPUS//,/ })

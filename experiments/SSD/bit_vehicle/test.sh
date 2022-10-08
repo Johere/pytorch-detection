@@ -16,8 +16,8 @@ CONFIG_FILE=${2-${cfg}}
 ckpt=$(ls output/${EXP_NAME}/latest.pth)
 CHECKPOINT=${3-${ckpt}}
 
-#JOB_NAME=test_UA_DETRAC-v2-val-${EXP_NAME}
-JOB_NAME=test_bit-test_${EXP_NAME}
+JOB_NAME=test_UA_DETRAC-v2-val-${EXP_NAME}
+# JOB_NAME=test_bit-test_${EXP_NAME}
 OUTPUT_DIR=output/${JOB_NAME}
 
 mkdir -p ./logs
@@ -28,8 +28,8 @@ python -u ${ROOT}/tools/test.py ${CONFIG_FILE} ${CHECKPOINT} \
     --save-dir ${OUTPUT_DIR} \
     --gpu-id 5 \
     --cfg-options \
-    data.test.ann_file=/mnt/disk3/data_for_linjiaojiao/datasets/BITVehicle/test_meta.list \
-    data.test.img_prefix=/mnt/disk3/data_for_linjiaojiao/datasets/BITVehicle/images \
+    data.test.ann_file=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/val_meta.list \
+    data.test.img_prefix=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/images \
     2>&1 | tee logs/${JOB_NAME}.log
 
 echo ${JOB_NAME} 'done.'
@@ -40,10 +40,21 @@ echo ${JOB_NAME} 'done.'
 # ${ROOT}/open_model_zoo/ssd/ssd300_coco_20210803_015428-d231a06e.pth
 #CONFIG_FILE=${2-${ROOT}/configs/ssd/ssd512_coco.py}
 #CHECKPOINT=${3-${ROOT}/open_model_zoo/ssd/ssd512_coco_20210803_022849-0a47a1ca.pth}
+
+## test on UA_DETRAC_fps5/val
 #    --cfg-options \
 #    data.test.ann_file=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/val_meta.list \
 #    data.test.img_prefix=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/images \
+
+## test on UA_DETRAC_fps5/test
+#    --cfg-options \
+#    data.test.img_prefix=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/images \
 #    data.test.ann_file=/mnt/disk3/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/test_meta.list \
-#    data.workers_per_gpu=0 \
+
+## test on BITVehicle/test
+#    --cfg-options \
 #    data.test.ann_file=/mnt/disk3/data_for_linjiaojiao/datasets/BITVehicle/test_meta.list \
 #    data.test.img_prefix=/mnt/disk3/data_for_linjiaojiao/datasets/BITVehicle/images \
+
+## debug
+#    data.workers_per_gpu=0 \

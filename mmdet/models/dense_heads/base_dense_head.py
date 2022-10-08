@@ -391,6 +391,11 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         """
         assert len(cls_scores) == len(bbox_preds)
 
+        decode_prior = True
+        if not with_nms:
+            # decode_prior (bool): Whether apply prior-decoder to the bboxes, Default: True, if not, return prior-bboxes
+            decode_prior = False
+
         num_levels = len(cls_scores)
 
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
@@ -434,6 +439,8 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         mlvl_scores = []
         mlvl_batch_priors = []
 
+        do_nms_pre = False
+
         for cls_score, bbox_pred, score_factors, priors in zip(
                 mlvl_cls_scores, mlvl_bbox_preds, mlvl_score_factor,
                 mlvl_priors):
@@ -442,12 +449,14 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
             scores = cls_score.permute(0, 2, 3,
                                        1).reshape(batch_size, -1,
                                                   self.cls_out_channels)
-            if self.use_sigmoid_cls:
-                scores = scores.sigmoid()
-                nms_pre_score = scores
-            else:
-                scores = scores.softmax(-1)
-                nms_pre_score = scores
+            
+            # don't do softmax each level, softmax once for all levels
+            # if self.use_sigmoid_cls:
+            #     scores = scores.sigmoid()
+            #     nms_pre_score = scores
+            # else:
+            #     scores = scores.softmax(-1)
+            #     nms_pre_score = scores
 
             if with_score_factors:
                 score_factors = score_factors.permute(0, 2, 3, 1).reshape(
@@ -461,6 +470,14 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
             nms_pre = get_k_for_topk(nms_pre_tensor, bbox_pred.shape[1])
             # import pdb; pdb.set_trace()
             if 0 < nms_pre < bbox_pred.shape[1]:
+                do_nms_pre = True
+
+                if self.use_sigmoid_cls:
+                    scores = scores.sigmoid()
+                    nms_pre_score = scores
+                else:
+                    scores = scores.softmax(-1)
+                    nms_pre_score = scores
                 
                 if with_score_factors:
                     nms_pre_score = (nms_pre_score * score_factors[..., None])
@@ -510,23 +527,44 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         # batch_bboxes = torch.cat(mlvl_batch_bboxes, dim=1)
         batch_pred_bboxes = torch.cat(mlvl_batch_bboxes, dim=1)
         batch_priors = torch.cat(mlvl_batch_priors, dim=1)
-        batch_bboxes = self.bbox_coder.decode(
-            batch_priors, batch_pred_bboxes, max_shape=img_shape)
+        if decode_prior:
+            batch_bboxes = self.bbox_coder.decode(
+                batch_priors, batch_pred_bboxes, max_shape=img_shape)
+        else:
+            means = self.bbox_coder.means
+            stds = self.bbox_coder.stds
+            means = batch_pred_bboxes.new_tensor(means).view(1, -1).repeat(1, batch_pred_bboxes.size(-1) // 4)
+            stds = batch_pred_bboxes.new_tensor(stds).view(1, -1).repeat(1, batch_pred_bboxes.size(-1) // 4)
+            batch_bboxes = batch_pred_bboxes * stds + means
+            # import pdb; pdb.set_trace()
+            # dx = batch_bboxes[..., 0::4]
+            # dy = batch_bboxes[..., 1::4]
+            # dw = batch_bboxes[..., 2::4]
+            # dh = batch_bboxes[..., 3::4]
+            # batch_bboxes = batch_pred_bboxes
         batch_scores = torch.cat(mlvl_scores, dim=1)
-        if with_score_factors:
-            batch_score_factors = torch.cat(mlvl_score_factors, dim=1)
-
-        # Replace multiclass_nms with ONNX::NonMaxSuppression in deployment
-
-        from mmdet.core.export import add_dummy_nms_for_onnx
+        if not do_nms_pre:
+            # if do_nms_pre == true, softmax is done, no need to do again here
+            batch_scores = batch_scores.softmax(-1)
 
         if not self.use_sigmoid_cls:
-            batch_scores = batch_scores[..., :self.num_classes]
-
-        if with_score_factors:
-            batch_scores = batch_scores * (batch_score_factors.unsqueeze(2))
+            if not with_nms:
+                batch_scores = torch.cat([
+                    batch_scores[..., self.num_classes:],
+                    batch_scores[..., 0:self.num_classes]
+                ], dim=-1)
+            else:
+                batch_scores = batch_scores[..., :self.num_classes]
 
         if with_nms:
+            # Replace multiclass_nms with ONNX::NonMaxSuppression in deployment
+
+            from mmdet.core.export import add_dummy_nms_for_onnx
+
+            if with_score_factors:
+                batch_score_factors = torch.cat(mlvl_score_factors, dim=1)
+                batch_scores = batch_scores * (batch_score_factors.unsqueeze(2))
+                
             max_output_boxes_per_class = cfg.nms.get(
                 'max_output_boxes_per_class', 200)
             iou_threshold = cfg.nms.get('iou_threshold', 0.5)
@@ -537,4 +575,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                                           iou_threshold, score_threshold,
                                           nms_pre, cfg.max_per_img)
         else:
-            return batch_bboxes, batch_scores
+            if not decode_prior:
+                return [batch_bboxes, batch_priors], batch_scores
+            else:
+                return batch_bboxes, batch_scores

@@ -33,8 +33,9 @@ gt_color = (255, 0, 0)
 
 def parse_meta(list_file):
     """
-    # path img_height, img_width left top right bottom type
-    vehicle_0000499.jpg 1080 1920 557 172 921 594 car
+    # path img-height img-width left top right bottom category vehicle-type orientation trajectory-length
+    MVI_40855/img00025.jpg -1   -1      883.75  113.75  960.5   193.25  -1  -1      -1      -1
+    MVI_40855/img00025.jpg 540  960     484     208     581     289     1   car     300.96  521
 
     return: data_infos:
     [{
@@ -51,6 +52,54 @@ def parse_meta(list_file):
     },
     ...]
     """
+    PARSE_INDEX = {
+        'path': -1,
+        'img-height': -1,
+        'img-width': -1,
+        'left': -1,
+        'top': -1,
+        'right': -1,
+        'bottom': -1
+    }
+    PARSE_OPTIONAL_INDEX = {
+        'category': -1
+    }
+    def _get_val(contents, name):
+        if name in PARSE_OPTIONAL_INDEX.keys():
+            if PARSE_OPTIONAL_INDEX[name] == -1:
+                return None
+            else:
+                return contents[PARSE_OPTIONAL_INDEX[name]]
+        elif name in PARSE_INDEX.keys():
+            return contents[PARSE_INDEX[name]]
+        else:
+            raise ValueError('unknonw column name: {}'.format(name))
+
+    def _set_index(first_line):
+    
+        # initialize
+        for key in PARSE_INDEX.keys():
+            PARSE_INDEX[key] = -1
+        for key in PARSE_OPTIONAL_INDEX.keys():
+            PARSE_OPTIONAL_INDEX[key] = -1
+
+        first_line = first_line.strip().replace('#', '')
+        tmp = first_line.split()
+        for key_idx, key in enumerate(tmp):
+            if key in PARSE_INDEX.keys():
+                PARSE_INDEX[key] = key_idx
+            elif key in PARSE_OPTIONAL_INDEX.keys():
+                PARSE_OPTIONAL_INDEX[key] = key_idx
+            else:
+                print('unknown key in meta_file: {}, ignore it!'.format(key))
+        for key, val in PARSE_INDEX.items():
+            if val == -1:
+                raise ValueError('column not exist: {}'.format(key))
+        print('================== PARSE_INDEX ====================')
+        print(PARSE_INDEX)
+        print('================== PARSE_OPTIONAL_INDEX ====================')
+        print(PARSE_OPTIONAL_INDEX)
+
     print('------------------------------------------------------------')
     print('start parsing meta files: {}'.format(list_file))
     data_infos = []
@@ -61,12 +110,27 @@ def parse_meta(list_file):
     img_info_dict = defaultdict(dict)
     for ln in lines:
         if ln.startswith("#"):
+            _set_index(ln)
             continue
         ln = ln.strip()
-        contents = ln.split()[:7]
-        filename, img_height, img_width, left, top, right, bottom = contents
-        filename = contents[0]
-        ann_dict[filename].append([left, top, right, bottom])
+        contents = ln.split()
+
+        filename = _get_val(contents, 'path')
+        img_height = _get_val(contents, 'img-height')
+        img_width = _get_val(contents, 'img-width')
+        left = _get_val(contents, 'left')
+        top = _get_val(contents, 'top')
+        right = _get_val(contents, 'right')
+        bottom = _get_val(contents, 'bottom')
+
+        # optional parts
+        category = _get_val(contents, 'category')
+        if category is None:
+            category = 1
+        else:
+            category = int(category)
+
+        ann_dict[filename].append([left, top, right, bottom, category])
         img_info_dict[filename] = {
             "width": int(img_width),
             "height": int(img_height)
@@ -86,13 +150,19 @@ def parse_meta(list_file):
         gt_bboxes = []
         gt_labels = []
         for item in ann_list:
-            left, top, right, bottom = item
-
-            bbox = [left, top, right, bottom]
-            bbox = [int(_) for _ in bbox]
-
-            gt_bboxes.append(bbox)
-            gt_labels.append(0)
+            left, top, right, bottom, category = item
+            try:
+                bbox = [left, top, right, bottom]
+                bbox = [int(float(_)) for _ in bbox]
+                category = int(category)
+            except:
+                import pdb; pdb.set_trace()
+            if category == -1:
+                # ignore
+                continue
+            else:
+                gt_bboxes.append(bbox)
+                gt_labels.append(0)
 
         if gt_bboxes:
             gt_bboxes = np.array(gt_bboxes, dtype=np.float32)
@@ -318,7 +388,7 @@ def visualize(tp, cls_dets, cls_gts, img_list, iou_thr=0.5):
         vis_cnt += 1
         print('[{}/{}] visualized image saved: {}'.format(img_ix + 1, num_imgs, save_to))
     print('visualization done. {} images are saved.'.format(vis_cnt))
-    print('output dir:{}'.format(vis_dir))
+    print('visualization output dir:{}'.format(vis_dir))
 
 
 if __name__ == '__main__':
@@ -391,7 +461,8 @@ if __name__ == '__main__':
 
     print('start profiling...')
     tp, cls_dets, cls_gts = get_tpfp(results, annotations)
-    visualize(tp, cls_dets, cls_gts, img_list)
+    if args.vis_ratio:
+        visualize(tp, cls_dets, cls_gts, img_list)
 
     print('start evaluation...')
     eval_results = evaluate(results, annotations)

@@ -23,7 +23,7 @@ parser.add_argument('--images_dir', type=str,
                     default='/home/linjiaojiao/datasets/HCE_test/demo_image',
                     help='image dir for test')
 parser.add_argument('--list_file', type=str,
-                    default='/home/linjiaojiao/remote_mount/datasets/UA_DETRAC_fps5/val_meta.list',
+                    default=None,
                     help='image list_file for test')
 parser.add_argument('-o', '--output_dir', type=str, default='./results/IR-models/vehicle_detector',
                     help='Path to dump predict results')
@@ -160,6 +160,7 @@ def inference_ssd_barrier_0106(image_files, input_size=(300, 300)):
         executable_model, net, output = \
             get_IE_output(model_dir, ie_input, executable_model=executable_model, net=net)
         predictions = output['DetectionOutput_']
+        # import pdb; pdb.set_trace()
 
         cur_results = []
         # det_output: [1, 1, N, 7],  [image_id, label, conf, x_min, y_min, x_max, y_max]
@@ -167,10 +168,11 @@ def inference_ssd_barrier_0106(image_files, input_size=(300, 300)):
             # import pdb; pdb.set_trace()
             # image_id, cls, score, x_min, y_min, x_max, y_max = obj
             category_id = int(obj[1]) - 1
+            # category_id = int(obj[1])
             score = obj[2]
             if args.thresh > 0 and score < args.thresh:
                 continue
-            label = det2label[int(obj[1])]
+            label = det2label[category_id + 1]
             try:
                 x_min = int(w * obj[3])
                 y_min = int(h * obj[4])

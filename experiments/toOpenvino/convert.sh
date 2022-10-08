@@ -15,15 +15,14 @@ if [[ ! -d "logs" ]]; then
   mkdir logs
 fi
 
-CHECKPOINT_FILE=${1-"../SSD/bit_vehicle/output/baseline_ssd300_bgr_uadetrac_4gpus/latest.pth"}
+CHECKPOINT_FILE=${1-"../SSD/bit_vehicle/output/ssdlite_exp13.1_4gpus/latest.pth"}
 MODEL_DIR=${CHECKPOINT_FILE%/*}
 CONFIG_FILE=$(ls ${MODEL_DIR}/*.py)
 
 INPUT_SHAPE=${2-"300"}
 
 EXP_NAME=${MODEL_DIR##*/}
-# OUTPUT_DIR=output/${EXP_NAME}_ov-${OV_VERSION}_sim-onnx_debug_backbone300
-OUTPUT_DIR=output/${EXP_NAME}_ov-${OV_VERSION}_sim-onnx_backbone
+OUTPUT_DIR=output/${EXP_NAME}_input${INPUT_SHAPE}_openvino-op
 mkdir -p ${OUTPUT_DIR}
 OUTPUT_FILE=${OUTPUT_DIR}/${CHECKPOINT_FILE##*/}
 
@@ -46,17 +45,19 @@ toONNXModel(){
     --cfg-options \
       model.test_cfg.deploy_nms_pre=-1 \
     --show \
-    --verify \
-    --simplify \
+    --output_format openvino_op \
     2>&1 | tee logs/${JOD_NAME}.log
   echo ${JOD_NAME} 'done.'
 #    --test-img ${TEST_IMAGE_PATH} \
 #    --simplify \ # onnx will generate shape->gather->unsqueeze->reshape for op: reshape, using this to simplify it!!!
 #    --opset-version ${OPSET_VERSION} \
 #    --cfg-options ${CFG_OPTIONS}
-#    --single_output \
+#    --output_format single_output \
+#    --output_format openvino_op \  # use openvino op: `DetectionOutput`
+    # --verify \    # use custom op: DetectionOutput, so we don't verify the generated onnx model
 }
 simplifyONNX(){
+  # input_model output_model [check_n] [args]
   mv ${OUTPUT_FILE}.onnx ${OUTPUT_FILE}-naive.onnx
   python -m onnxsim ${OUTPUT_FILE}-naive.onnx ${OUTPUT_FILE}.onnx --input-shape 1,3,${INPUT_SHAPE},${INPUT_SHAPE}
 }
