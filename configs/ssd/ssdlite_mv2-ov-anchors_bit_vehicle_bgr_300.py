@@ -50,10 +50,10 @@ model = dict(
             type='SSDAnchorGenerator',
             scale_major=False,
             ov_anchors=True,
-            strides=[16, 32, 64, 107, 160, 320],
+            strides=[16, 32, 64, 107, 160, 300],
             ratios=[[], [2], [2], [], [], [2]],
-            min_sizes=[48, 100, 150, 202, 253, 304],
-            max_sizes=[100, 150, 202, 253, 304, 320]),
+            min_sizes=[48, 100, 150, 202, 253, 284],
+            max_sizes=[100, 150, 202, 253, 284, 300]),
         bbox_coder=dict(
             type='DeltaXYWHBBoxCoder',
             target_means=[0.0, 0.0, 0.0, 0.0],
@@ -94,7 +94,7 @@ train_pipeline = [
         type='MinIoURandomCrop',
         min_ious=(0.1, 0.3, 0.5, 0.7, 0.9),
         min_crop_size=0.3),
-    dict(type='Resize', img_scale=(320, 320), keep_ratio=False),
+    dict(type='Resize', img_scale=(300, 300), keep_ratio=False),
     dict(type='RandomFlip', flip_ratio=0.5),
     dict(
         type='PhotoMetricDistortion',
@@ -107,7 +107,7 @@ train_pipeline = [
         mean=[103.53, 116.28, 123.675],
         std=[57.375, 57.12, 58.395],
         to_rgb=False),
-    dict(type='Pad', size_divisor=320),
+    dict(type='Pad', size_divisor=300),
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
 ]
@@ -115,7 +115,7 @@ test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
         type='MultiScaleFlipAug',
-        img_scale=(320, 320),
+        img_scale=(300, 300),
         flip=False,
         transforms=[
             dict(type='Resize', keep_ratio=False),
@@ -124,7 +124,7 @@ test_pipeline = [
                 mean=[103.53, 116.28, 123.675],
                 std=[57.375, 57.12, 58.395],
                 to_rgb=False),
-            dict(type='Pad', size_divisor=320),
+            dict(type='Pad', size_divisor=300),
             dict(type='ImageToTensor', keys=['img']),
             dict(type='Collect', keys=['img'])
         ])
@@ -156,7 +156,7 @@ data = dict(
                         min_ious=(0.1, 0.3, 0.5, 0.7, 0.9),
                         min_crop_size=0.3),
                     dict(
-                        type='Resize', img_scale=(320, 320), keep_ratio=False),
+                        type='Resize', img_scale=(300, 300), keep_ratio=False),
                     dict(type='RandomFlip', flip_ratio=0.5),
                     dict(
                         type='PhotoMetricDistortion',
@@ -169,7 +169,7 @@ data = dict(
                         mean=[103.53, 116.28, 123.675],
                         std=[57.375, 57.12, 58.395],
                         to_rgb=False),
-                    dict(type='Pad', size_divisor=320),
+                    dict(type='Pad', size_divisor=300),
                     dict(type='DefaultFormatBundle'),
                     dict(
                         type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
@@ -198,7 +198,7 @@ data = dict(
                         min_ious=(0.1, 0.3, 0.5, 0.7, 0.9),
                         min_crop_size=0.3),
                     dict(
-                        type='Resize', img_scale=(320, 320), keep_ratio=False),
+                        type='Resize', img_scale=(300, 300), keep_ratio=False),
                     dict(type='RandomFlip', flip_ratio=0.5),
                     dict(
                         type='PhotoMetricDistortion',
@@ -211,7 +211,7 @@ data = dict(
                         mean=[103.53, 116.28, 123.675],
                         std=[57.375, 57.12, 58.395],
                         to_rgb=False),
-                    dict(type='Pad', size_divisor=320),
+                    dict(type='Pad', size_divisor=300),
                     dict(type='DefaultFormatBundle'),
                     dict(
                         type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
@@ -228,7 +228,7 @@ data = dict(
             dict(type='LoadImageFromFile'),
             dict(
                 type='MultiScaleFlipAug',
-                img_scale=(320, 320),
+                img_scale=(300, 300),
                 flip=False,
                 transforms=[
                     dict(type='Resize', keep_ratio=False),
@@ -237,7 +237,7 @@ data = dict(
                         mean=[103.53, 116.28, 123.675],
                         std=[57.375, 57.12, 58.395],
                         to_rgb=False),
-                    dict(type='Pad', size_divisor=320),
+                    dict(type='Pad', size_divisor=300),
                     dict(type='ImageToTensor', keys=['img']),
                     dict(type='Collect', keys=['img'])
                 ])
@@ -252,7 +252,7 @@ data = dict(
             dict(type='LoadImageFromFile'),
             dict(
                 type='MultiScaleFlipAug',
-                img_scale=(320, 320),
+                img_scale=(300, 300),
                 flip=False,
                 transforms=[
                     dict(type='Resize', keep_ratio=False),
@@ -261,7 +261,7 @@ data = dict(
                         mean=[103.53, 116.28, 123.675],
                         std=[57.375, 57.12, 58.395],
                         to_rgb=False),
-                    dict(type='Pad', size_divisor=320),
+                    dict(type='Pad', size_divisor=300),
                     dict(type='ImageToTensor', keys=['img']),
                     dict(type='Collect', keys=['img'])
                 ])
@@ -276,6 +276,6 @@ lr_config = dict(
     min_lr=0)
 runner = dict(type='EpochBasedRunner', max_epochs=120)
 evaluation = dict(interval=5, metric='mAP')
-work_dir = 'output/ssdlite_exp13_4gpus'
+work_dir = 'output/ssdlite_exp13.1_4gpus'
 auto_resume = False
 gpu_ids = range(0, 4)

@@ -30,7 +30,7 @@ And we also released a new model: Mobilenet-v2 SSD-based using this training rep
 
 The training and testing scripts can be found in `experiments/SSD/bit_vehicle`
 training scripts: `experiments/SSD/bit_vehicle/train_dist.sh`
-config file: `configs/ssd/ssdlite_mv2-ov-anchors_bit_vehicle_bgr.py`
+config file: `configs/ssd/ssdlite_mv2-ov-anchors_bit_vehicle_bgr_300.py`
 dataset: BIT-Vehicle + UA-DETRAC-fps5
 
 
