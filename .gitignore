@@ -123,3 +123,12 @@ work_dirs/
 *.pth
 *.py~
 *.sh~
+
+# output 
+experiments/*/*/output/*
+experiments/*/*/logs/*
+experiments/*/*/results/*
+experiments/*/output/*
+experiments/*/logs/*
+experiments/*/results/*
+tools/*/results/*
