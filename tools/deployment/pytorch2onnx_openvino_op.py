@@ -24,8 +24,8 @@ def pytorch2onnx(model,
                  test_img=None,
                  do_simplify=False,
                  dynamic_export=None,
-                 skip_postprocess=False):
-
+                 skip_postprocess=False,
+                 output_format=None):
     if normalize_cfg is not None:
         input_config = {
             'input_shape': input_shape,
@@ -66,29 +66,84 @@ def pytorch2onnx(model,
         model.forward,
         img_metas=img_meta_list,
         return_loss=False,
+        output_format=output_format,
         rescale=False)
 
-    output_names = ['dets', 'labels']
+    if output_format == 'single_output':
+        output_names = ['DetectionOutput_']
+    elif output_format == 'openvino_op':
+        '''
+        inputs needed by openvino op: DetectiongOutput_
+        [1] DetectionOutput_loc_: 2D input tensor with box logits with shape [N, num_prior_boxes * num_loc_classes * 4]. 
+            num_loc_classes is equal to num_classes when share_location is 0 or its equal to 1 otherwise
+        [2] DetectionOutput_conf_: 2D input tensor with class predictions with shape [N, num_prior_boxes * num_classes].
+        '''
+        # output_names = ['DetectionOutput_Reshape_loc_', 'DetectionOutput_Reshape_conf_', 'DetectionOutput_Reshape_priors_']
+        enable_onnx_checker = False
+        use_external_data_format = False
+        output_names = ['DetectionOutput_']
+    else:
+        output_names = ['dets', 'labels']
+
     if model.with_mask:
         output_names.append('masks')
     input_name = 'input'
     dynamic_axes = None
     if dynamic_export:
-        dynamic_axes = {
-            input_name: {
-                0: 'batch',
-                2: 'height',
-                3: 'width'
-            },
-            'dets': {
-                0: 'batch',
-                1: 'num_dets',
-            },
-            'labels': {
-                0: 'batch',
-                1: 'num_dets',
-            },
-        }
+        if output_format == 'single_output':
+            dynamic_axes = {
+                input_name: {
+                    0: 'batch',
+                    2: 'height',
+                    3: 'width'
+                },
+                'DetectionOutput_': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+            }
+        elif output_format == 'openvino_op':
+            # raise NotImplementedError('not support for dynamic_export in output_format:{}'.format(output_format))
+            dynamic_axes = {
+                input_name: {
+                    0: 'batch',
+                    2: 'height',
+                    3: 'width'
+                },
+                "DetectionOutput_": {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+                # 'DetectionOutput_loc_': {
+                #     0: 'batch',
+                #     1: 'num_dets',
+                # },
+                # 'DetectionOutput_conf_': {
+                #     0: 'batch',
+                #     1: 'num_dets',
+                # },
+                # 'DetectionOutput_Reshape_priors_': {
+                #     0: 'batch',
+                #     # 1: 1,
+                #     # 2: 'num_dets',
+                # },
+            }
+        else:
+            dynamic_axes = {
+                input_name: {
+                    0: 'batch',
+                    2: 'height',
+                    3: 'width'
+                },
+                'dets': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+                'labels': {
+                    0: 'batch',
+                    1: 'num_dets',
+                },
+            }
         if model.with_mask:
             dynamic_axes['masks'] = {0: 'batch', 1: 'num_dets'}
 
@@ -103,7 +158,8 @@ def pytorch2onnx(model,
         do_constant_folding=True,
         verbose=show,
         opset_version=opset_version,
-        dynamic_axes=dynamic_axes)
+        dynamic_axes=dynamic_axes,
+        custom_opsets={"custom_domain": 2})
 
     model.forward = origin_forward
 
@@ -127,16 +183,23 @@ def pytorch2onnx(model,
         ), f'Requires to install onnx-simplify>={min_required_version}'
 
         input_dic = {'input': img_list[0].detach().cpu().numpy()}
+        # model_opt, check_ok = onnxsim.simplify(
+        #     output_file,
+        #     input_data=input_dic,
+        #     custom_lib=ort_custom_op_path,
+        #     dynamic_input_shape=dynamic_export)
         model_opt, check_ok = onnxsim.simplify(
             output_file,
-            input_data=input_dic,
-            custom_lib=ort_custom_op_path,
-            dynamic_input_shape=dynamic_export)
+            overwrite_input_shapes={None: [1, 3, 300, 300]})
+            
         if check_ok:
+            import shutil
+            shutil.copy(output_file, output_file.replace('.onnx', '-naive.onnx'))
             onnx.save(model_opt, output_file)
             print(f'Successfully simplified ONNX model: {output_file}')
         else:
             warnings.warn('Failed to simplify ONNX model.')
+        
     print(f'Successfully exported ONNX model: {output_file}')
 
     if verify:
@@ -297,6 +360,14 @@ def parse_args():
         help='Whether to export model without post process. Experimental '
         'option. We do not guarantee the correctness of the exported '
         'model.')
+    parser.add_argument(
+        '--output_format',
+        type=str,
+        default=None,
+        choices=['single_output', 'openvino_op', None],
+        help='single_output: concat dets and labels as single output["DetectionOutput_"], shape: [1, 1, N, 7]'
+             'last axis stands for: [image_id, label, conf, x_min, y_min, x_max, y_max];'
+             'openvino_op: output the tensors needed by openvino op type: DetectiongOutput_')
     args = parser.parse_args()
     return args
 
@@ -333,6 +404,7 @@ if __name__ == '__main__':
     # build the model and load checkpoint
     model = build_model_from_cfg(args.config, args.checkpoint,
                                  args.cfg_options)
+    print(model)
 
     if not args.input_img:
         args.input_img = osp.join(osp.dirname(__file__), '../../demo/demo.jpg')
@@ -352,7 +424,8 @@ if __name__ == '__main__':
         test_img=args.test_img,
         do_simplify=args.simplify,
         dynamic_export=args.dynamic_export,
-        skip_postprocess=args.skip_postprocess)
+        skip_postprocess=args.skip_postprocess,
+        output_format=args.output_format)
 
     # Following strings of text style are from colorama package
     bright_style, reset_style = '\x1b[1m', '\x1b[0m'

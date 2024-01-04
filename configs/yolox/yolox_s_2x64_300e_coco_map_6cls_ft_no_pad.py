@@ -15,15 +15,15 @@ model = dict(
         out_channels=128,
         num_csp_blocks=1),
     bbox_head=dict(
-        type='YOLOXHead', num_classes=80, in_channels=128, feat_channels=128),
+        type='YOLOXHead', num_classes=6, in_channels=128, feat_channels=128),
     train_cfg=dict(assigner=dict(type='SimOTAAssigner', center_radius=2.5)),
     # In order to align the source code, the threshold of the val phase is
     # 0.01, and the threshold of the test phase is 0.001.
     test_cfg=dict(score_thr=0.01, nms=dict(type='nms', iou_threshold=0.65)))
 
 # dataset settings
-data_root = '/mnt/disk3/data_for_linjiaojiao/datasets/coco2017/COCO/'
-dataset_type = 'CocoDataset'
+data_root = '/mnt/disk2/data_for_linjiaojiao/datasets/coco2017/COCO/'
+dataset_type = 'MappedCocoDataset'
 
 train_pipeline = [
     dict(type='Mosaic', img_scale=img_scale, pad_val=114.0),
@@ -41,7 +41,7 @@ train_pipeline = [
     # According to the official implementation, multi-scale
     # training is not considered here but in the
     # 'mmdet/models/detectors/yolox.py'.
-    dict(type='Resize', img_scale=img_scale, keep_ratio=True),
+    dict(type='Resize', img_scale=img_scale, keep_ratio=False),
     dict(
         type='Pad',
         pad_to_square=True,
@@ -74,19 +74,19 @@ test_pipeline = [
         img_scale=img_scale,
         flip=False,
         transforms=[
-            dict(type='Resize', keep_ratio=True),
-            dict(type='RandomFlip'),
-            dict(
-                type='Pad',
-                pad_to_square=True,
-                pad_val=dict(img=(114.0, 114.0, 114.0))),
+            dict(type='Resize', keep_ratio=False),
+            # dict(type='RandomFlip'),
+            # dict(
+            #     type='Pad',
+            #     pad_to_square=True,
+            #     pad_val=dict(img=(114.0, 114.0, 114.0))),
             dict(type='DefaultFormatBundle'),
             dict(type='Collect', keys=['img'])
         ])
 ]
 
 data = dict(
-    samples_per_gpu=8,
+    samples_per_gpu=64,
     workers_per_gpu=4,
     persistent_workers=True,
     train=train_dataset,
@@ -102,20 +102,20 @@ data = dict(
         pipeline=test_pipeline))
 
 # optimizer
-# default 8 gpu
+# default 4 gpu
 optimizer = dict(
     type='SGD',
-    lr=0.01,
+    lr=0.001,
     momentum=0.9,
     weight_decay=5e-4,
     nesterov=True,
     paramwise_cfg=dict(norm_decay_mult=0., bias_decay_mult=0.))
 optimizer_config = dict(grad_clip=None)
 
-max_epochs = 300
+max_epochs = 50
 num_last_epochs = 15
 resume_from = None
-interval = 10
+interval = 5
 
 # learning policy
 lr_config = dict(
@@ -125,7 +125,7 @@ lr_config = dict(
     by_epoch=False,
     warmup_by_epoch=True,
     warmup_ratio=1,
-    warmup_iters=5,  # 5 epoch
+    warmup_iters=1,  # 1 epoch
     num_last_epochs=num_last_epochs,
     min_lr_ratio=0.05)
 
@@ -156,5 +156,9 @@ evaluation = dict(
     # or equal to ‘max_epochs - num_last_epochs’.
     interval=interval,
     dynamic_intervals=[(max_epochs - num_last_epochs, 1)],
-    metric='bbox')
+    metric='bbox',
+    classwise=True)
 log_config = dict(interval=50)
+
+auto_resume = True
+load_from='/mnt/disk1/data_for_linjiaojiao/projects/pytorch-detection/experiments/yolox/coco/output/baseline_yolox_s_b32_4gpus/best_bbox_mAP_epoch_298.pth'

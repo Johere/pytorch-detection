@@ -2,6 +2,10 @@ _base_ = ['../_base_/schedules/schedule_1x.py', '../_base_/default_runtime.py']
 
 img_scale = (640, 640)
 
+# DefaultFormatBundle:
+# img_norm_cfg = dict(
+#     mean=[0., 0., 0.], std=[1., 1., 1.], to_rgb=False)
+
 # model settings
 model = dict(
     type='YOLOX',
@@ -15,15 +19,15 @@ model = dict(
         out_channels=128,
         num_csp_blocks=1),
     bbox_head=dict(
-        type='YOLOXHead', num_classes=80, in_channels=128, feat_channels=128),
+        type='YOLOXHead', num_classes=6, in_channels=128, feat_channels=128),
     train_cfg=dict(assigner=dict(type='SimOTAAssigner', center_radius=2.5)),
     # In order to align the source code, the threshold of the val phase is
     # 0.01, and the threshold of the test phase is 0.001.
     test_cfg=dict(score_thr=0.01, nms=dict(type='nms', iou_threshold=0.65)))
 
 # dataset settings
-data_root = '/mnt/disk3/data_for_linjiaojiao/datasets/coco2017/COCO/'
-dataset_type = 'CocoDataset'
+data_root = '/mnt/disk2/data_for_linjiaojiao/datasets/coco2017/COCO/'
+dataset_type = 'MappedCocoDataset'
 
 train_pipeline = [
     dict(type='Mosaic', img_scale=img_scale, pad_val=114.0),
@@ -41,13 +45,13 @@ train_pipeline = [
     # According to the official implementation, multi-scale
     # training is not considered here but in the
     # 'mmdet/models/detectors/yolox.py'.
-    dict(type='Resize', img_scale=img_scale, keep_ratio=True),
-    dict(
-        type='Pad',
-        pad_to_square=True,
-        # If the image is three-channel, the pad value needs
-        # to be set separately for each channel.
-        pad_val=dict(img=(114.0, 114.0, 114.0))),
+    dict(type='Resize', img_scale=img_scale, keep_ratio=False),
+    # dict(
+    #     type='Pad',
+    #     pad_to_square=True,
+    #     # If the image is three-channel, the pad value needs
+    #     # to be set separately for each channel.
+    #     pad_val=dict(img=(114.0, 114.0, 114.0))),
     dict(type='FilterAnnotations', min_gt_bbox_wh=(1, 1), keep_empty=False),
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
@@ -74,19 +78,20 @@ test_pipeline = [
         img_scale=img_scale,
         flip=False,
         transforms=[
-            dict(type='Resize', keep_ratio=True),
-            dict(type='RandomFlip'),
-            dict(
-                type='Pad',
-                pad_to_square=True,
-                pad_val=dict(img=(114.0, 114.0, 114.0))),
+            dict(type='Resize', keep_ratio=False),
+            # dict(type='Resize', keep_ratio=True),
+            # dict(type='RandomFlip'),
+            # dict(
+            #     type='Pad',
+            #     pad_to_square=True,
+            #     pad_val=dict(img=(114.0, 114.0, 114.0))),
             dict(type='DefaultFormatBundle'),
             dict(type='Collect', keys=['img'])
         ])
 ]
 
 data = dict(
-    samples_per_gpu=8,
+    samples_per_gpu=64,
     workers_per_gpu=4,
     persistent_workers=True,
     train=train_dataset,
@@ -156,5 +161,6 @@ evaluation = dict(
     # or equal to ‘max_epochs - num_last_epochs’.
     interval=interval,
     dynamic_intervals=[(max_epochs - num_last_epochs, 1)],
-    metric='bbox')
+    metric='bbox',
+    classwise=True)
 log_config = dict(interval=50)

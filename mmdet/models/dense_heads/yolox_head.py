@@ -127,6 +127,8 @@ class YOLOXHead(BaseDenseHead, BBoxTestMixin):
         self.fp16_enabled = False
         self._init_layers()
 
+        self.decode_in_inference = True
+
     def _init_layers(self):
         self.multi_level_cls_convs = nn.ModuleList()
         self.multi_level_reg_convs = nn.ModuleList()
@@ -211,7 +213,7 @@ class YOLOXHead(BaseDenseHead, BBoxTestMixin):
                            self.multi_level_conv_cls,
                            self.multi_level_conv_reg,
                            self.multi_level_conv_obj)
-
+    
     def get_bboxes(self,
                    cls_scores,
                    bbox_preds,
@@ -488,3 +490,162 @@ class YOLOXHead(BaseDenseHead, BBoxTestMixin):
         l1_target[:, :2] = (gt_cxcywh[:, :2] - priors[:, :2]) / priors[:, 2:]
         l1_target[:, 2:] = torch.log(gt_cxcywh[:, 2:] / priors[:, 2:] + eps)
         return l1_target
+
+    
+    ''''
+    Override onnx_export in mmdet/models/dense_heads/base_dense_head.py/onnx_export
+    '''
+    def onnx_export(self,
+                   cls_scores,
+                   bbox_preds,
+                   objectnesses,
+                   img_metas=None,
+                   cfg=None,
+                   rescale=False,
+                   with_nms=True):
+        """Transform network outputs of a batch into bbox results.
+        Args:
+            cls_scores (list[Tensor]): Classification scores for all
+                scale levels, each is a 4D-tensor, has shape
+                (batch_size, num_priors * num_classes, H, W).
+            bbox_preds (list[Tensor]): Box energies / deltas for all
+                scale levels, each is a 4D-tensor, has shape
+                (batch_size, num_priors * 4, H, W).
+            objectnesses (list[Tensor], Optional): Score factor for
+                all scale level, each is a 4D-tensor, has shape
+                (batch_size, 1, H, W).
+            img_metas (list[dict], Optional): Image meta info. Default None.
+            cfg (mmcv.Config, Optional): Test / postprocessing configuration,
+                if None, test_cfg would be used.  Default None.
+            rescale (bool): If True, return boxes in original image space.
+                Default False.
+            with_nms (bool): If True, do nms before return boxes.
+                Default True.
+        Returns:
+            list[list[Tensor, Tensor]]: Each item in result_list is 2-tuple.
+                The first item is an (n, 5) tensor, where the first 4 columns
+                are bounding box positions (tl_x, tl_y, br_x, br_y) and the
+                5-th column is a score between 0 and 1. The second item is a
+                (n,) tensor where each item is the predicted class label of
+                the corresponding box.
+        """
+        assert len(cls_scores) == len(bbox_preds) == len(objectnesses)
+        scale_factors = [img_meta['scale_factor'] for img_meta in img_metas]
+
+        num_imgs = len(img_metas)
+        featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
+        mlvl_priors = self.prior_generator.grid_priors(
+            featmap_sizes,
+            dtype=cls_scores[0].dtype,
+            device=cls_scores[0].device,
+            with_stride=True)
+
+        # flatten cls_scores, bbox_preds and objectness
+        flatten_cls_scores = [
+            cls_score.permute(0, 2, 3, 1).reshape(num_imgs, -1,
+                                                  self.cls_out_channels)
+            for cls_score in cls_scores
+        ]
+        flatten_bbox_preds = [
+            bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+            for bbox_pred in bbox_preds
+        ]
+        flatten_objectness = [
+            objectness.permute(0, 2, 3, 1).reshape(num_imgs, -1)
+            for objectness in objectnesses
+        ]
+
+        flatten_cls_scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
+        flatten_bbox_preds = torch.cat(flatten_bbox_preds, dim=1)
+        flatten_objectness = torch.cat(flatten_objectness, dim=1).sigmoid()
+        flatten_priors = torch.cat(mlvl_priors)
+
+        flatten_bboxes = self._bbox_decode(flatten_priors, flatten_bbox_preds)
+
+        if rescale:
+            flatten_bboxes[..., :4] /= flatten_bboxes.new_tensor(
+                scale_factors).unsqueeze(1)
+
+        batch_outputs = []
+        for img_id in range(len(img_metas)):
+            cls_scores = flatten_cls_scores[img_id]
+            score_factor = flatten_objectness[img_id]
+            bboxes = flatten_bboxes[img_id]
+            '''
+            (Pdb) cls_scores.shape
+            torch.Size([8400, 6])
+            (Pdb) bboxes.shape
+            torch.Size([8400, 4])
+            (Pdb) max_scores.shape
+            torch.Size([8400])
+            (Pdb) labels.shape
+            torch.Size([8400])
+            (Pdb) confidence.shape
+            torch.Size([8400])
+            '''
+            score_factor = score_factor.reshape(len(score_factor), 1)
+            outputs = torch.cat([bboxes, score_factor, cls_scores], dim=-1)
+
+            batch_outputs.append(outputs)
+
+        # [batch, n_proposals, score_factor, cls1_score, cls2_score, ...]
+        '''
+        (Pdb) batch_outputs.shape
+        torch.Size([1, 8400, 11])
+
+        '''
+        batch_outputs = torch.stack(batch_outputs)
+        return batch_outputs
+
+    ''''
+    To align onnx_export in YOLOX official repo: https://github.com/Megvii-BaseDetection/YOLOX.git
+    '''
+    # @staticmethod
+    # def meshgrid(*tensors):
+    #     return torch.meshgrid(*tensors, indexing="ij")
+    
+    # def decode_outputs(self, outputs, dtype):
+    #     grids = []
+    #     strides = []
+    #     for (hsize, wsize), stride in zip(self.hw, self.strides):
+    #         yv, xv = self.meshgrid([torch.arange(hsize), torch.arange(wsize)])
+    #         grid = torch.stack((xv, yv), 2).view(1, -1, 2)
+    #         grids.append(grid)
+    #         shape = grid.shape[:2]
+    #         strides.append(torch.full((*shape, 1), stride))
+
+    #     grids = torch.cat(grids, dim=1).type(dtype)
+    #     strides = torch.cat(strides, dim=1).type(dtype)
+
+    #     outputs = torch.cat([
+    #         (outputs[..., 0:2] + grids) * strides,
+    #         torch.exp(outputs[..., 2:4]) * strides,
+    #         outputs[..., 4:]
+    #     ], dim=-1)
+    #     return outputs
+    
+    # def onnx_export(self, feats, img_metas=None, with_nms=True):
+    #     outputs = []
+    #     for k, kwargs in enumerate(
+    #         zip(feats, 
+    #             self.multi_level_cls_convs,
+    #             self.multi_level_reg_convs,
+    #             self.multi_level_conv_cls,
+    #             self.multi_level_conv_reg,
+    #             self.multi_level_conv_obj)
+    #     ):
+    #         cls_score, bbox_pred, objectness = self.forward_single(*kwargs)
+    #         output = torch.cat(
+    #                 [bbox_pred, objectness.sigmoid(), cls_score.sigmoid()], 1
+    #             )
+    #         outputs.append(output)
+    #     self.hw = [x.shape[-2:] for x in outputs]
+    #     # [batch, n_anchors_all, 85]
+    #     outputs = torch.cat(
+    #         [x.flatten(start_dim=2) for x in outputs], dim=2
+    #     ).permute(0, 2, 1)
+    #     if self.decode_in_inference:
+    #         return self.decode_outputs(outputs, dtype=feats[0].type())
+    #     else:
+    #         return outputs
+    

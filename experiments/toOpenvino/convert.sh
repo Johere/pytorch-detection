@@ -35,7 +35,7 @@ toONNXModel(){
   export CUDA_VISIBLE_DEVICES='1'
   JOD_NAME=to_onnx_${EXP_NAME}
   echo ${JOD_NAME}
-  python ${ROOT}/tools/deployment/pytorch2onnx.py \
+  python ${ROOT}/tools/deployment/pytorch2onnx_openvino_op.py \
     ${CONFIG_FILE} \
     ${CHECKPOINT_FILE} \
     --output-file ${OUTPUT_FILE}.onnx \

@@ -22,6 +22,7 @@ parser.add_argument('-o', '--output_dir', type=str, default='./results/detection
 parser.add_argument('-v', '--vis_ratio', type=float, default=0, help='visualization ratio')
 parser.add_argument('--images_dir', type=str,
                     default='/mnt/disk1/data_for_linjiaojiao/datasets/UA_DETRAC_fps5/images', help='image dir for dataset')
+parser.add_argument('--eval', action='store_true', help='Whether to run evaluate')
 args = parser.parse_args()
 
 tp_color_map = {
@@ -29,6 +30,10 @@ tp_color_map = {
     1: (0, 255, 0)   # wrong obj
 }
 gt_color = (255, 0, 0)
+
+# CLASSES = None
+# CLASSES = ('person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck')
+CLASSES = ('bicycle', 'car', 'motorcycle', 'bus', 'truck')
 
 
 def parse_meta(list_file):
@@ -326,20 +331,20 @@ def get_tpfp(det_results,
     return tp, cls_dets, cls_gts
 
 
-def visualize(tp, cls_dets, cls_gts, img_list, iou_thr=0.5):
+def visualize(tp_dict, cls_dets_dict, cls_gts_dict, img_list, iou_thr=0.5,):
     """visualize det results
 
         Args:
             img_list list(str): path
-            cls_dets list(ndarray): Detected bboxes of target_label for each image, of shape (num_dets_per_img, 5)
-            cls_gts list(ndarray): GT bboxes of target_label for each image, of shape (num_gts_per_img, 5)
-            tp: list(ndarray): for each image: shape (num_dets_per_img, 1)
+            cls_dets_dict dict(list(ndarray)): Detected bboxes of target_label for each image, of shape (num_dets_per_img, 5)
+            cls_gts_dict dict(list(ndarray)): GT bboxes of target_label for each image, of shape (num_gts_per_img, 5)
+            tp_dict: dict(list(ndarray)): for each image: shape (num_dets_per_img, 1)
             iou_thr: 0.5
 
         """
-    num_imgs = len(cls_dets)
-    assert len(cls_gts) == num_imgs, 'mismatch: {} vs. {}'.format(len(cls_gts), num_imgs)
-    assert len(tp) == num_imgs, 'mismatch: {} vs. {}'.format(len(tp), num_imgs)
+    num_imgs = len(cls_dets_dict[0])     # label_index = 0
+    assert len(cls_gts_dict[0]) == num_imgs, 'mismatch: {} vs. {}'.format(len(cls_gts_dict[0]), num_imgs)
+    assert len(tp_dict[0]) == num_imgs, 'mismatch: {} vs. {}'.format(len(tp_dict[0]), num_imgs)
 
     tmp = args.pred_file.split('/')
     prefix = tmp[-2]
@@ -354,33 +359,42 @@ def visualize(tp, cls_dets, cls_gts, img_list, iou_thr=0.5):
             continue
         assert os.path.exists(img_path), 'file not exists: {}'.format(img_path)
         image = cv2.imread(img_path)
-        num_dets = cls_dets[img_ix].shape[0]
-        det_bboxes = cls_dets[img_ix][:, :4]
-        scores = cls_dets[img_ix][:, -1]
-        tp_flag = tp[img_ix].reshape(num_dets)
-        for det_ix in range(num_dets):
-            score = scores[det_ix]
-            if args.thresh > 0 and score < args.thresh:
+
+        for label_index in cls_dets_dict.keys():
+            cls_dets = cls_dets_dict[label_index]
+            cls_gts = cls_gts_dict[label_index]
+            tp = tp_dict[label_index]
+
+            num_dets = cls_dets[img_ix].shape[0]
+            if num_dets == 0:
                 continue
-            det_bbox = det_bboxes[det_ix]
-            x_min = int(det_bbox[0])
-            y_min = int(det_bbox[1])
-            x_max = int(det_bbox[2])
-            y_max = int(det_bbox[3])
+            det_bboxes = cls_dets[img_ix][:, :4]
+            scores = cls_dets[img_ix][:, -1]
+            tp_flag = tp[img_ix].reshape(num_dets)
+            for det_ix in range(num_dets):
+                score = scores[det_ix]
+                if args.thresh > 0 and score < args.thresh:
+                    continue
+                det_bbox = det_bboxes[det_ix]
+                x_min = int(det_bbox[0])
+                y_min = int(det_bbox[1])
+                x_max = int(det_bbox[2])
+                y_max = int(det_bbox[3])
 
-            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), tp_color_map[tp_flag[det_ix]], 2)
-            cv2.putText(image, '{:.2f}'.format(score), (x_min, y_min),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, tp_color_map[tp_flag[det_ix]], thickness=2)
+                cv2.rectangle(image, (x_min, y_min), (x_max, y_max), tp_color_map[tp_flag[det_ix]], 2)
+                cv2.putText(image, '{}: {:.2f}'.format(CLASSES[label_index] if CLASSES is not None else label_index,
+                                                        score), (x_min, y_min),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, tp_color_map[tp_flag[det_ix]], thickness=2)
+            
+            num_gts = cls_gts[img_ix].shape[0]
+            for gt_ix in range(num_gts):
+                gt_bbox = cls_gts[img_ix][gt_ix]
+                x_min = int(gt_bbox[0])
+                y_min = int(gt_bbox[1])
+                x_max = int(gt_bbox[2])
+                y_max = int(gt_bbox[3])
 
-        num_gts = cls_gts[img_ix].shape[0]
-        for gt_ix in range(num_gts):
-            gt_bbox = cls_gts[img_ix][gt_ix]
-            x_min = int(gt_bbox[0])
-            y_min = int(gt_bbox[1])
-            x_max = int(gt_bbox[2])
-            y_max = int(gt_bbox[3])
-
-            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), gt_color, 1)
+                cv2.rectangle(image, (x_min, y_min), (x_max, y_max), gt_color, 1)
 
         save_to = os.path.join(vis_dir, filename.replace('/', '_'))
         os.makedirs(os.path.dirname(save_to), exist_ok=True)
@@ -408,6 +422,7 @@ if __name__ == '__main__':
         lines = f.readlines()
 
     results_dict = defaultdict(list)
+    # label_list = set()
     for ln in lines:
         if ln.startswith('#'):
             continue
@@ -418,9 +433,10 @@ if __name__ == '__main__':
         right = float(tmp[3])
         bottom = float(tmp[4])
         label = int(tmp[5])
+        # label_list.add(label)
         assert label < args.num_classes, 'invalid label: {}, given num_classes = {}'.format(label, args.num_classes)
         score = float(tmp[6])
-        results_dict[path].append([left, top, right, bottom, score])
+        results_dict[path].append([left, top, right, bottom, score, label])
     print('success to parse prediction file: {}, {} images'.format(args.pred_file, len(results_dict.keys())))
 
     """
@@ -452,20 +468,44 @@ if __name__ == '__main__':
         annotations_dict[filename] = item['ann']
     print('success to parse meta_file: {}, {} images'.format(args.meta_file, len(data_infos)))
 
-    results, annotations = [], []
+    det_results, annotations = [], []
     img_list = []
     for path in results_dict.keys():
-        results.append([np.array(results_dict[path])])
+        cur_results_dict = defaultdict(list)
+        for res_ in results_dict[path]:
+            label = res_[-1]
+            cur_results_dict[label].append(res_[:-1])
+        cur_results = []
+        for label_index in range(args.num_classes):
+            cur_results.append(np.array(cur_results_dict[label_index]))
+        det_results.append(cur_results)
         annotations.append(annotations_dict[path])
         img_list.append(path)
 
-    print('start profiling...')
-    tp, cls_dets, cls_gts = get_tpfp(results, annotations)
-    if args.vis_ratio:
-        visualize(tp, cls_dets, cls_gts, img_list)
+    # det_results (list[list]): [[cls1_det, cls2_det, ...], ...].
 
-    print('start evaluation...')
-    eval_results = evaluate(results, annotations)
-    print(eval_results)
+    eval_results_log = []
+    cls_dets_dict = dict()
+    cls_gts_dict = dict()
+    tp_dict = dict()
+    for label_index in range(args.num_classes):
+        print('==========start profiling on target label: {}=========='.format(label_index))
+        tp, cls_dets, cls_gts = get_tpfp(det_results, annotations, target_label=label_index)
+        cls_dets_dict[label_index] = cls_dets
+        cls_gts_dict[label_index] = cls_gts
+        tp_dict[label_index] = tp
+
+        if args.eval:
+            print('start evaluation...')
+            import pdb; pdb.set_trace()
+            eval_results = evaluate(cls_dets, annotations)
+            print(eval_results)
+            eval_results_log.append("label-{}: {}\n".format(label_index, eval_results))
+
+    print('start visualization...')
+    if args.vis_ratio:
+        visualize(tp_dict, cls_dets_dict, cls_gts_dict, img_list)
+
+    print(eval_results_log)
 
     print('Done.')

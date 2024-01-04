@@ -132,3 +132,78 @@ class YOLOX(SingleStageDetector):
 
         input_size = (tensor[0].item(), tensor[1].item())
         return input_size
+    
+    ''''
+    Override onnx_export in mmdet/models/dense_heads/single_stage.py/onnx_export
+    '''
+    def onnx_export(self, img, img_metas, with_nms=True):
+        """Test function without test time augmentation.
+
+        Args:
+            img (torch.Tensor): input images.
+            img_metas (list[dict]): List of image information.
+
+        Returns:
+            tuple[Tensor, Tensor]: dets of shape [N, num_det, 5]
+                and class labels of shape [N, num_det].
+        """
+        x = self.backbone(img)
+        # return x
+        x = self.extract_feat(img)
+        
+        outs = self.bbox_head(x)
+        # get origin input shape to support onnx dynamic shape
+
+        # get shape as tensor
+        img_shape = torch._shape_as_tensor(img)[2:]
+        img_metas[0]['img_shape_for_onnx'] = img_shape
+        # get pad input shape to support onnx dynamic shape for exporting
+        # `CornerNet` and `CentripetalNet`, which 'pad_shape' is used
+        # for inference
+        img_metas[0]['pad_shape_for_onnx'] = img_shape
+
+        if len(outs) == 2:
+            # add dummy score_factor
+            outs = (*outs, None)
+        '''
+        Returns:
+            list[list[Tensor, Tensor]]: Each item in result_list is 2-tuple.
+                The first item is an (n, 5) tensor, where the first 4 columns
+                are bounding box positions (tl_x, tl_y, br_x, br_y) and the
+                5-th column is a score between 0 and 1. The second item is a
+                (n,) tensor where each item is the predicted class label of
+                the corresponding box.
+        '''
+        # TODO Can we change to `get_bboxes` when `onnx_export` fail
+
+        # [batch, n_proposals, tl_x, tl_y, br_x, br_y, objectness_score, cls1_score, cls2_score, ...]
+        '''
+        (Pdb) batch_outputs.shape
+        torch.Size([1, 8400, 10])  # num_classes=5
+
+        '''
+        batch_outputs = self.bbox_head.onnx_export(
+            *outs, img_metas, with_nms=with_nms)
+        return batch_outputs
+
+    ''''
+    To align onnx_export in YOLOX official repo: https://github.com/Megvii-BaseDetection/YOLOX.git
+    '''
+    # def onnx_export(self, img, img_metas=None, with_nms=True):
+    #     """Test function without test time augmentation.
+
+    #     Args:
+    #         img (torch.Tensor): input images.
+    #         img_metas (list[dict]): List of image information.
+
+    #     Returns:
+    #         tuple[Tensor, Tensor]: dets of shape [N, num_det, 5]
+    #             and class labels of shape [N, num_det].
+    #     """
+    #     x = self.backbone(img)
+    #     # return x
+    #     x = self.extract_feat(img)
+
+    #     batch_outputs = self.bbox_head.onnx_export(
+    #         x, img_metas, with_nms=with_nms)
+    #     return batch_outputs

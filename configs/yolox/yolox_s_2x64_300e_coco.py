@@ -22,7 +22,7 @@ model = dict(
     test_cfg=dict(score_thr=0.01, nms=dict(type='nms', iou_threshold=0.65)))
 
 # dataset settings
-data_root = '/mnt/disk3/data_for_linjiaojiao/datasets/coco2017/COCO/'
+data_root = '/mnt/disk2/data_for_linjiaojiao/datasets/coco2017/COCO/'
 dataset_type = 'CocoDataset'
 
 train_pipeline = [
@@ -86,7 +86,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=8,
+    samples_per_gpu=64,
     workers_per_gpu=4,
     persistent_workers=True,
     train=train_dataset,

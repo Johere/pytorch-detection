@@ -262,20 +262,20 @@ class SingleStageDetector(BaseDetector):
 
         # _s
         '''
-        > CORNER:
+        > CORNER: [loc_xmin, loc_ymin, loc_xmax, loc_ymax]
             new_xmin = prior_xmin + loc_xmin;
             new_ymin = prior_ymin + loc_ymin;
             new_xmax = prior_xmax + loc_xmax;
             new_ymax = prior_ymax + loc_ymax;
-        > CENTER_SIZE:
+        > CENTER_SIZE: [loc_xcenter, loc_ycenter, loc_width, loc_height]
             prior_width    =  prior_xmax - prior_xmin;
-            prior_height   =  prior_ymax - prior_ymin;
+            prior_height   =  prior_height - prior_ymin;
             prior_center_x = (prior_xmin + prior_xmax) / 2.0f;
             prior_center_y = (prior_ymin + prior_ymax) / 2.0f;
-            decode_bbox_center_x = loc_xmin * prior_width  + prior_center_x;
-            decode_bbox_center_y = loc_ymin * prior_height + prior_center_y;
-            decode_bbox_width  = std::exp(loc_xmax) * prior_width;
-            decode_bbox_height = std::exp(loc_ymax) * prior_height;
+            decode_bbox_center_x = loc_xcenter * prior_width  + prior_center_x;
+            decode_bbox_center_y = loc_ycenter * prior_height + prior_center_y;
+            decode_bbox_width  = std::exp(loc_width) * prior_width;
+            decode_bbox_height = std::exp(loc_height) * prior_height;
         '''
         code_type = "CENTER_SIZE"
         # code_type = "CORNER"

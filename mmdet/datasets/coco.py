@@ -13,6 +13,7 @@ import numpy as np
 from mmcv.utils import print_log
 from terminaltables import AsciiTable
 
+from mmdet.core import eval_map
 from mmdet.core import eval_recalls
 from .api_wrappers import COCO, COCOeval
 from .builder import DATASETS
@@ -410,7 +411,7 @@ class CocoDataset(CustomDataset):
             tmp_dir = None
         result_files = self.results2json(results, jsonfile_prefix)
         return result_files, tmp_dir
-
+        
     def evaluate(self,
                  results,
                  metric='bbox',
@@ -621,3 +622,265 @@ class CocoDataset(CustomDataset):
         if tmp_dir is not None:
             tmp_dir.cleanup()
         return eval_results
+
+
+@DATASETS.register_module()
+class MappedCocoDataset(CocoDataset):
+    # MAP_CLASSES = {
+    #     'person': ['person'],
+    #     'vehicle': ['car', 'bus', 'truck'],
+    #     'non-motor': ['bicycle', 'motorcycle']
+    # }
+
+    # oldcatname2newcatname = dict()
+    # oldcatname2label = dict()
+
+    # CLASSES = []
+    # FILTERED_OLD_CLASSES = []
+    # label_id = 0
+    # for new_cat, old_cat in MAP_CLASSES.items():
+    #     for nm in old_cat:
+    #         oldcatname2label[nm] = label_id
+    #         oldcatname2newcatname[nm] = new_cat
+    #         FILTERED_OLD_CLASSES.append(nm)
+    #     CLASSES.append(new_cat)
+    #     label_id += 1
+    # CLASSES = tuple(CLASSES)
+
+    MAP_CLASSES = dict()
+    CLASSES = ('person',
+        'car', 'bus', 'truck',
+        'bicycle', 'motorcycle')
+
+    def load_annotations(self, ann_file):
+        """Load annotation from COCO style annotation file.
+
+        Args:
+            ann_file (str): Path of annotation file.
+
+        Returns:
+            list[dict]: Annotation info from COCO api.
+        """
+
+        self.coco = COCO(ann_file)
+        # The order of returned `cat_ids` will not
+        # change with the order of the CLASSES
+
+        self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
+        self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
+
+        # half-job
+        # if len(self.MAP_CLASSES) == 0:
+        #     # do not map classes, just filter
+        #     self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
+        #     self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
+        # else:
+        #     self.cat_ids = dict()
+        #     import pdb; pdb.set_trace()
+        #     for new_cat, old_cat in self.MAP_CLASSES.items():
+        #         self.cat_ids.extend(self.coco.get_cat_ids(cat_names=old_cat))
+        #     self.cat2label = {cat_id: self.oldcatname2label[self.FILTERED_OLD_CLASSES[i]] for i, cat_id in enumerate(self.cat_ids)}
+
+        full_img_ids = self.coco.get_img_ids()
+        self.img_ids = []
+        data_infos = []
+        total_ann_ids = []
+        for i in full_img_ids:
+            info = self.coco.load_imgs([i])[0]
+            info['filename'] = info['file_name']
+            ann_ids = self.coco.get_ann_ids(img_ids=[i])
+
+            filter = 0
+            ann_info = self.coco.load_anns(ann_ids)
+            for ann in ann_info:
+                if ann['category_id'] in self.cat_ids:
+                    filter += 1
+            
+            # do not filter!!!
+            # if filter == 0:
+            #     continue
+            '''
+            (Pdb) info
+            {
+                'license': 3, 
+                'file_name': '000000391895.jpg', 
+                'coco_url': 'http://images.cocodataset.org/train2017/000000391895.jpg', 
+                'height': 360, 
+                'width': 640, 
+                'date_captured': '2013-11-14 11:18:45', 
+                'flickr_url': 'http://farm9.staticflickr.com/8186/8119368305_4e622c8349_z.jpg', 
+                'id': 391895, 
+                'filename': '000000391895.jpg'
+            }
+            (Pdb) ann_ids
+            [151091, 202758, 1260346, 1766676]
+
+            '''
+            data_infos.append(info)
+            total_ann_ids.extend(ann_ids)
+            self.img_ids.append(i)
+
+            # # debug!!!
+            # if len(data_infos) > 100:
+            #     break
+        assert len(set(total_ann_ids)) == len(
+            total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
+        return data_infos
+
+    # def evaluate(self,
+    #              results,
+    #              metric='mAP',
+    #              logger=None,
+    #              proposal_nums=(100, 300, 1000),
+    #              iou_thr=0.5,
+    #              scale_ranges=None,
+    #              classwise=False,):
+    #     """Evaluate in VOC protocol. Modified version towards coco
+
+    #     Args:
+    #         results (list[list | tuple]): Testing results of the dataset.
+    #         metric (str | list[str]): Metrics to be evaluated. Options are
+    #             'mAP', 'recall'.
+    #         logger (logging.Logger | str, optional): Logger used for printing
+    #             related information during evaluation. Default: None.
+    #         proposal_nums (Sequence[int]): Proposal number used for evaluating
+    #             recalls, such as recall@100, recall@1000.
+    #             Default: (100, 300, 1000).
+    #         iou_thr (float | list[float]): IoU threshold. Default: 0.5.
+    #         scale_ranges (list[tuple], optional): Scale ranges for evaluating
+    #             mAP. If not specified, all bounding boxes would be included in
+    #             evaluation. Default: None.
+
+    #     Returns:
+    #         dict[str, float]: AP/recall metrics.
+    #     """
+    #     if not isinstance(metric, str):
+    #         assert len(metric) == 1
+    #         metric = metric[0]
+    #     allowed_metrics = ['mAP', 'recall', 'bbox']
+    #     if metric not in allowed_metrics:
+    #         raise KeyError(f'metric {metric} is not supported')
+    #     annotations = [self.get_ann_info(i) for i in range(len(self))]
+    #     eval_results = OrderedDict()
+    #     iou_thrs = [iou_thr] if isinstance(iou_thr, float) else iou_thr
+    #     if metric == 'mAP' or metric == 'bbox':
+    #         assert isinstance(iou_thrs, list)
+    #         ds_name = self.CLASSES
+    #         mean_aps = []
+    #         for iou_thr in iou_thrs:
+    #             print_log(f'\n{"-" * 15}iou_thr: {iou_thr}{"-" * 15}')
+    #             # Follow the official implementation,
+    #             # http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCdevkit_18-May-2011.tar
+    #             # we should use the legacy coordinate system in mmdet 1.x,
+    #             # which means w, h should be computed as 'x2 - x1 + 1` and
+    #             # `y2 - y1 + 1`
+    #             mean_ap, _ = eval_map(
+    #                 results,
+    #                 annotations,
+    #                 scale_ranges=None,
+    #                 iou_thr=iou_thr,
+    #                 dataset=ds_name,
+    #                 logger=logger,
+    #                 use_legacy_coordinate=True)
+    #             mean_aps.append(mean_ap)
+    #             eval_results[f'AP{int(iou_thr * 100):02d}'] = round(mean_ap, 3)
+    #         eval_results['mAP'] = sum(mean_aps) / len(mean_aps)
+    #         eval_results.move_to_end('mAP', last=False)
+    #     elif metric == 'recall':
+    #         gt_bboxes = [ann['bboxes'] for ann in annotations]
+    #         recalls = eval_recalls(
+    #             gt_bboxes,
+    #             results,
+    #             proposal_nums,
+    #             iou_thrs,
+    #             logger=logger,
+    #             use_legacy_coordinate=True)
+    #         for i, num in enumerate(proposal_nums):
+    #             for j, iou_thr in enumerate(iou_thrs):
+    #                 eval_results[f'recall@{num}@{iou_thr}'] = recalls[i, j]
+    #         if recalls.shape[1] > 1:
+    #             ar = recalls.mean(axis=1)
+    #             for i, num in enumerate(proposal_nums):
+    #                 eval_results[f'AR@{num}'] = ar[i]
+    #     return eval_results
+
+
+@DATASETS.register_module()
+class MappedCocoDatasetWOPerson(MappedCocoDataset):
+    CLASSES = ('car', 'bus', 'truck',
+        'bicycle', 'motorcycle')
+    
+    def load_annotations(self, ann_file):
+        """Load annotation from COCO style annotation file.
+
+        Args:
+            ann_file (str): Path of annotation file.
+
+        Returns:
+            list[dict]: Annotation info from COCO api.
+        """
+
+        self.coco = COCO(ann_file)
+        # The order of returned `cat_ids` will not
+        # change with the order of the CLASSES
+
+        self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
+        self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
+
+        # half-job
+        # if len(self.MAP_CLASSES) == 0:
+        #     # do not map classes, just filter
+        #     self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
+        #     self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
+        # else:
+        #     self.cat_ids = dict()
+        #     import pdb; pdb.set_trace()
+        #     for new_cat, old_cat in self.MAP_CLASSES.items():
+        #         self.cat_ids.extend(self.coco.get_cat_ids(cat_names=old_cat))
+        #     self.cat2label = {cat_id: self.oldcatname2label[self.FILTERED_OLD_CLASSES[i]] for i, cat_id in enumerate(self.cat_ids)}
+
+        full_img_ids = self.coco.get_img_ids()
+        self.img_ids = []
+        data_infos = []
+        total_ann_ids = []
+        for i in full_img_ids:
+            info = self.coco.load_imgs([i])[0]
+            info['filename'] = info['file_name']
+            ann_ids = self.coco.get_ann_ids(img_ids=[i])
+
+            filter = 0
+            ann_info = self.coco.load_anns(ann_ids)
+            for ann in ann_info:
+                if ann['category_id'] in self.cat_ids:
+                    filter += 1
+            
+            # do not filter!!!
+            # if filter == 0:
+            #     continue
+            '''
+            (Pdb) info
+            {
+                'license': 3, 
+                'file_name': '000000391895.jpg', 
+                'coco_url': 'http://images.cocodataset.org/train2017/000000391895.jpg', 
+                'height': 360, 
+                'width': 640, 
+                'date_captured': '2013-11-14 11:18:45', 
+                'flickr_url': 'http://farm9.staticflickr.com/8186/8119368305_4e622c8349_z.jpg', 
+                'id': 391895, 
+                'filename': '000000391895.jpg'
+            }
+            (Pdb) ann_ids
+            [151091, 202758, 1260346, 1766676]
+
+            '''
+            data_infos.append(info)
+            total_ann_ids.extend(ann_ids)
+            self.img_ids.append(i)
+
+            # # debug!!!
+            # if len(data_infos) > 100:
+            #     break
+        assert len(set(total_ann_ids)) == len(
+            total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
+        return data_infos

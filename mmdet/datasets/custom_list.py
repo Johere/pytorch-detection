@@ -1,413 +1,278 @@
-# Copyright (c) OpenMMLab. All rights reserved.
+"""
+author: jiaojiao.lin@intel.com
+"""
+import contextlib
+import io
+import itertools
+import logging
 import os.path as osp
+import tempfile
 import warnings
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import mmcv
 import numpy as np
 from mmcv.utils import print_log
 from terminaltables import AsciiTable
-from torch.utils.data import Dataset
 
 from mmdet.core import eval_map, eval_recalls
+from .api_wrappers import COCO, COCOeval
 from .builder import DATASETS
-from .pipelines import Compose
+from .custom import CustomDataset
 
 
 @DATASETS.register_module()
-class CustomDataset(Dataset):
-    """Custom dataset for detection.
+class CustomListDataset(CustomDataset):
+    """
+    list_file for each line: only contains image-path
+    Annotations will be dummy data
 
-    The annotation format is shown as follows. The `ann` field is optional for
-    testing.
-
-    .. code-block:: none
-
-        [
+    required:
+    self.data_infos:
+    [{
+            'filename': 'a.jpg',
+            'width': 1280,
+            'height': 720,
+            'ann':
             {
-                'filename': 'a.jpg',
-                'width': 1280,
-                'height': 720,
-                'ann': {
-                    'bboxes': <np.ndarray> (n, 4) in (x1, y1, x2, y2) order.
-                    'labels': <np.ndarray> (n, ),
-                    'bboxes_ignore': <np.ndarray> (k, 4), (optional field)
-                    'labels_ignore': <np.ndarray> (k, 4) (optional field)
-                }
-            },
-            ...
-        ]
+                    'bboxes': < np.ndarray > (n, 4) in (x1, y1, x2, y2) order.
+                    'labels': < np.ndarray > (n,),
+                    'bboxes_ignore': < np.ndarray > (k, 4), (optional field)
+                    'labels_ignore': < np.ndarray > (k, 4)(optional field)
+            }
+    },
+    ...]
 
-    Args:
-        ann_file list(str): Annotation file path.
-        pipeline (list[dict]): Processing pipeline.
-        classes (str | Sequence[str], optional): Specify classes to load.
-            If is None, ``cls.CLASSES`` will be used. Default: None.
-        data_root (str, optional): Data root for ``ann_file``,
-            ``img_prefix``, ``seg_prefix``, ``proposal_file`` if specified.
-        test_mode (bool, optional): If set True, annotation will not be loaded.
-        filter_empty_gt (bool, optional): If set true, images without bounding
-            boxes of the dataset's classes will be filtered out. This option
-            only works when `test_mode=False`, i.e., we never filter images
-            during tests.
+    key function: can inherit from CustomDataset
+    [1] load_annotations(self, ann_file)
+    [2] get_ann_info(self, idx)
     """
 
-    CLASSES = None
+    def _parse_meta(self, list_file):
+        """
+        # path
+        MVI_40855/img00005.jpg
+        """
+        print('------------------------------------------------------------')
+        print('start parsing meta files: {}'.format(list_file))
+        data_infos = []
+        with open(list_file, 'r') as f:
+            lines = f.readlines()
 
-    PALETTE = None
+        img_list = []
+        for ln in lines[1:]:
+            if ln.startswith("#"):
+                continue
+            ln = ln.strip()
+            filename = ln.split()[0]
+            img_list.append(filename)
 
-    def __init__(self,
-                 ann_file,
-                 pipeline,
-                 classes=None,
-                 data_root=None,
-                 img_prefix='',
-                 seg_prefix=None,
-                 proposal_file=None,
-                 test_mode=False,
-                 filter_empty_gt=True,
-                 file_client_args=dict(backend='disk')):
-        self.ann_file = ann_file
-        self.data_root = data_root
-        self.img_prefix = img_prefix
-        self.seg_prefix = seg_prefix
-        self.proposal_file = proposal_file
-        self.test_mode = test_mode
-        self.filter_empty_gt = filter_empty_gt
-        self.CLASSES = self.get_classes(classes)
-        self.file_client = mmcv.FileClient(**file_client_args)
-        import pdb; pdb.set_trace()
-        if not isinstance(self.ann_file, list):
-            self.ann_file = [self.ann_file]
+        for filename in img_list:
 
-        if self.img_prefix is not None:
-            if not isinstance(self.img_prefix, list):
-                self.img_prefix = [self.img_prefix]
-            assert len(self.img_prefix) == len(self.ann_file), 'invalid: {}'.format(self.img_prefix)
+            cur_data_info = {
+                "filename": filename,
+                "width": 0,
+                "height": 0
+            }
 
-        if self.seg_prefix is not None:
-            if not isinstance(self.seg_prefix, list):
-                self.seg_prefix = [self.seg_prefix]
-            assert len(self.seg_prefix) == len(self.ann_file), 'invalid: {}'.format(self.seg_prefix)
+            ann = dict(
+                bboxes=np.zeros((0, 4), dtype=np.float32),
+                labels=np.array([], dtype=np.int64),
+                bboxes_ignore=np.zeros((0, 4), dtype=np.float32)
+            )
+            cur_data_info.update({'ann': ann})
 
-        if self.proposal_file is not None:
-            if not isinstance(self.proposal_file, list):
-                self.proposal_file = [self.proposal_file]
-            assert len(self.proposal_file) == len(self.ann_file), 'invalid: {}'.format(self.proposal_file)
-
-        # join paths if data_root is specified
-        for list_idx in range(len(self.ann_file)):
-            if self.data_root is not None:
-                if not osp.isabs(self.ann_file[list_idx]):
-                    self.ann_file[list_idx] = osp.join(self.data_root, self.ann_file[list_idx])
-                if not (self.img_prefix is None or osp.isabs(self.img_prefix[list_idx])):
-                    self.img_prefix[list_idx] = osp.join(self.data_root, self.img_prefix[list_idx])
-                if not (self.seg_prefix is None or osp.isabs(self.seg_prefix[list_idx])):
-                    self.seg_prefix[list_idx] = osp.join(self.data_root, self.seg_prefix[list_idx])
-                if not (self.proposal_file is None
-                        or osp.isabs(self.proposal_file[list_idx])):
-                    self.proposal_file[list_idx] = osp.join(self.data_root, self.proposal_file[list_idx])
-
-        # load annotations (and proposals)
-        self.data_infos = []
-        for list_file in self.ann_file:
-            if hasattr(self.file_client, 'get_local_path'):
-                with self.file_client.get_local_path(list_file) as local_path:
-                    self.data_infos.extend(self.load_annotations(local_path))
-            else:
-                warnings.warn(
-                    'The used MMCV version does not have get_local_path. '
-                    f'We treat the {list_file} as local paths and it '
-                    'might cause errors if the path is not a local path. '
-                    'Please use MMCV>= 1.3.16 if you meet errors.')
-                self.data_infos.extend(self.load_annotations(list_file))
-
-        if self.proposal_file is not None:
-            self.proposals = []
-            for list_file in self.proposal_file:
-                if hasattr(self.file_client, 'get_local_path'):
-                    with self.file_client.get_local_path(list_file) as local_path:
-                        self.proposals.extend(self.load_proposals(local_path))
-                else:
-                    warnings.warn(
-                        'The used MMCV version does not have get_local_path. '
-                        f'We treat the {list_file} as local paths and it '
-                        'might cause errors if the path is not a local path. '
-                        'Please use MMCV>= 1.3.16 if you meet errors.')
-                    self.proposals.extend(self.load_proposals(list_file))
-        else:
-            self.proposals = None
-
-        # filter images too small and containing no annotations
-        if not test_mode:
-            valid_inds = self._filter_imgs()
-            self.data_infos = [self.data_infos[i] for i in valid_inds]
-            if self.proposals is not None:
-                self.proposals = [self.proposals[i] for i in valid_inds]
-            # set group flag for the sampler
-            self._set_group_flag()
-
-        # processing pipeline
-        self.pipeline = Compose(pipeline)
-
-    def __len__(self):
-        """Total number of samples of data."""
-        return len(self.data_infos)
+            data_infos.append(cur_data_info)
+        print('------------------------------------------------------------')
+        print('parsing custom list files done. Got: {} imgs.'.format(len(data_infos)))
+        return data_infos
 
     def load_annotations(self, ann_file):
-        """Load annotation from annotation file."""
-        return mmcv.load(ann_file)
-
-    def load_proposals(self, proposal_file):
-        """Load proposal from proposal file."""
-        return mmcv.load(proposal_file)
-
-    def get_ann_info(self, idx):
-        """Get annotation by index.
+        """ Load annotation from list-style annotation file.
+        list-style:
+        # path img_height, img_width left top right bottom type
+        vehicle_0000499.jpg 1080 1920 557 172 921 594 car
+        ...
 
         Args:
-            idx (int): Index of data.
+            ann_file (str): Path of annotation file.
 
         Returns:
-            dict: Annotation info of specified index.
+            list[dict]: Annotation info from COCO api.
         """
-
-        return self.data_infos[idx]['ann']
-
-    def get_cat_ids(self, idx):
-        """Get category ids by index.
-
-        Args:
-            idx (int): Index of data.
-
-        Returns:
-            list[int]: All categories in the image of specified index.
-        """
-
-        return self.data_infos[idx]['ann']['labels'].astype(np.int).tolist()
-
-    def pre_pipeline(self, results):
-        """Prepare results dict for pipeline."""
-        results['img_prefix'] = self.img_prefix
-        results['seg_prefix'] = self.seg_prefix
-        results['proposal_file'] = self.proposal_file
-        results['bbox_fields'] = []
-        results['mask_fields'] = []
-        results['seg_fields'] = []
+        data_infos = self._parse_meta(ann_file)
+        self.img_ids = list(np.arange(len(data_infos)))
+        return data_infos
 
     def _filter_imgs(self, min_size=32):
         """Filter images too small."""
-        if self.filter_empty_gt:
-            warnings.warn(
-                'CustomDataset does not support filtering empty gt images.')
         valid_inds = []
+        valid_img_ids = []
         for i, img_info in enumerate(self.data_infos):
+            img_id = self.img_ids[i]
+            if self.filter_empty_gt and img_info['ann']['bboxes'].shape[0] == 0:
+                continue
             if min(img_info['width'], img_info['height']) >= min_size:
                 valid_inds.append(i)
+                valid_img_ids.append(img_id)
+        self.img_ids = valid_img_ids
         return valid_inds
 
-    def _set_group_flag(self):
-        """Set flag according to image aspect ratio.
-
-        Images with aspect ratio greater than 1 will be set as group 1,
-        otherwise group 0.
-        """
-        self.flag = np.zeros(len(self), dtype=np.uint8)
-        for i in range(len(self)):
-            img_info = self.data_infos[i]
-            if img_info['width'] / img_info['height'] > 1:
-                self.flag[i] = 1
-
-    def _rand_another(self, idx):
-        """Get another random index from the same group as the given index."""
-        pool = np.where(self.flag == self.flag[idx])[0]
-        return np.random.choice(pool)
-
-    def __getitem__(self, idx):
-        """Get training/test data after pipeline.
+    def xyxy2xywh(self, bbox):
+        """Convert ``xyxy`` style bounding boxes to ``xywh`` style for COCO
+        evaluation.
 
         Args:
-            idx (int): Index of data.
+            bbox (numpy.ndarray): The bounding boxes, shape (4, ), in
+                ``xyxy`` order.
 
         Returns:
-            dict: Training/test data (with annotation if `test_mode` is set \
-                True).
+            list[float]: The converted bounding boxes, in ``xywh`` order.
         """
 
-        if self.test_mode:
-            return self.prepare_test_img(idx)
-        while True:
-            data = self.prepare_train_img(idx)
-            if data is None:
-                idx = self._rand_another(idx)
-                continue
-            return data
+        _bbox = bbox.tolist()
+        return [
+            _bbox[0],
+            _bbox[1],
+            _bbox[2] - _bbox[0],
+            _bbox[3] - _bbox[1],
+        ]
 
-    def prepare_train_img(self, idx):
-        """Get training data and annotations after pipeline.
+    def _proposal2list(self, results):
+        """
+        Convert detection results to hybrid-list style.
+
+        # path left top right bottom category-id score
+        """
+        res_list = []
+        for idx in range(len(self)):
+            img_id = self.img_ids[idx]
+            path = self.data_infos[img_id]['filename']
+            bboxes = results[idx]
+            label = 1
+            for i in range(bboxes.shape[0]):
+                left = float(bboxes[i][0])
+                top = float(bboxes[i][1])
+                right = float(bboxes[i][2])
+                bottom = float(bboxes[i][3])
+                score = float(bboxes[i][4])
+
+                res_list.append([path, left, top, right, bottom, label, score])
+        return res_list
+
+    def _det2list(self, results):
+        """
+        Convert detection results to hybrid-list style.
+
+        # path left top right bottom category-id score
+        """
+        res_list = []
+        for idx in range(len(self)):
+            img_id = self.img_ids[idx]
+            result = results[idx]
+            for label in range(len(result)):
+                path = self.data_infos[img_id]['filename']
+                bboxes = result[label]
+                for i in range(bboxes.shape[0]):
+                    left = float(bboxes[i][0])
+                    top = float(bboxes[i][1])
+                    right = float(bboxes[i][2])
+                    bottom = float(bboxes[i][3])
+                    score = float(bboxes[i][4])
+
+                    res_list.append([path, left, top, right, bottom, label, score])
+        return res_list
+
+    def _dump_list(self, res_list, list_file):
+        with open(list_file, 'w') as fout:
+            fout.write('# path left top right bottom category-id score\n')
+            for item in res_list:
+                path, left, top, right, bottom, label, score = item
+                fout.write('{} {} {} {} {} {} {}\n'.format(path, left, top, right, bottom, label, score))
+
+    def results2file(self, results, outfile_prefix):
+        """Dump the detection results to hybrid-list style.
+        # path left top right bottom category-id score
 
         Args:
-            idx (int): Index of data.
+            results (list[list | ndarray]): Testing results of the
+                dataset.
+            outfile_prefix (str): The filename prefix of the json files. If the
+                prefix is "somepath/xxx", the json files will be named
+                "somepath/xxx.bbox.txt",
+                "somepath/xxx.proposal.txt".
 
         Returns:
-            dict: Training data and annotation after pipeline with new keys \
-                introduced by pipeline.
+            dict[str: str]: Possible keys are "bbox", "proposal", and \
+                values are corresponding filenames.
         """
-
-        img_info = self.data_infos[idx]
-        ann_info = self.get_ann_info(idx)
-        results = dict(img_info=img_info, ann_info=ann_info)
-        if self.proposals is not None:
-            results['proposals'] = self.proposals[idx]
-        self.pre_pipeline(results)
-        return self.pipeline(results)
-
-    def prepare_test_img(self, idx):
-        """Get testing data after pipeline.
-
-        Args:
-            idx (int): Index of data.
-
-        Returns:
-            dict: Testing data after pipeline with new keys introduced by \
-                pipeline.
-        """
-
-        img_info = self.data_infos[idx]
-        results = dict(img_info=img_info)
-        if self.proposals is not None:
-            results['proposals'] = self.proposals[idx]
-        self.pre_pipeline(results)
-        return self.pipeline(results)
-
-    @classmethod
-    def get_classes(cls, classes=None):
-        """Get class names of current dataset.
-
-        Args:
-            classes (Sequence[str] | str | None): If classes is None, use
-                default CLASSES defined by builtin dataset. If classes is a
-                string, take it as a file name. The file contains the name of
-                classes where each line contains one class name. If classes is
-                a tuple or list, override the CLASSES defined by the dataset.
-
-        Returns:
-            tuple[str] or list[str]: Names of categories of the dataset.
-        """
-        if classes is None:
-            return cls.CLASSES
-
-        if isinstance(classes, str):
-            # take it as a file path
-            class_names = mmcv.list_from_file(classes)
-        elif isinstance(classes, (tuple, list)):
-            class_names = classes
+        result_files = dict()
+        if isinstance(results[0], list):
+            res_list = self._det2list(results)
+            result_files['bbox'] = f'{outfile_prefix}.bbox.txt'
+            result_files['proposal'] = f'{outfile_prefix}.bbox.txt'
+            self._dump_list(res_list, result_files['bbox'])
+        elif isinstance(results[0], np.ndarray):
+            res_list = self._proposal2list(results)
+            result_files['proposal'] = f'{outfile_prefix}.proposal.txt'
+            self._dump_list(res_list, result_files['proposal'])
         else:
-            raise ValueError(f'Unsupported type {type(classes)} of classes.')
+            raise TypeError('invalid type of results')
+        return result_files
 
-        return class_names
+    def fast_eval_recall(self, results, proposal_nums, iou_thrs, logger=None):
+        gt_bboxes = []
+        for i in range(len(self.img_ids)):
+            img_id = self.img_ids[i]
+            ann_info = self.data_info[img_id]['ann']
+            if len(ann_info) == 0:
+                gt_bboxes.append(np.zeros((0, 4)))
+                continue
+            bboxes = []
+            for ann in ann_info:
+                # if ann.get('ignore', False) or ann['iscrowd']:
+                #     continue
+                x1, y1, w, h = ann['bbox']
+                bboxes.append([x1, y1, x1 + w, y1 + h])
+            bboxes = np.array(bboxes, dtype=np.float32)
+            if bboxes.shape[0] == 0:
+                bboxes = np.zeros((0, 4))
+            gt_bboxes.append(bboxes)
 
-    def format_results(self, results, **kwargs):
-        """Place holder to format result to dataset specific output."""
+        recalls = eval_recalls(
+            gt_bboxes, results, proposal_nums, iou_thrs, logger=logger)
+        ar = recalls.mean(axis=1)
+        return ar
+
+    def format_results(self, results, save_dir=None, **kwargs):
+        """Format the results to hybrid-list style
+
+        Args:
+            results (list[tuple | numpy.ndarray]): Testing results of the
+                dataset.
+            listfile_prefix (str | None): The prefix of json files. It includes
+                the file path and the prefix of filename, e.g., "a/b/prefix".
+                If not specified, a temp file will be created. Default: None.
+
+        Returns:
+            tuple: (result_files, tmp_dir), result_files is a dict containing \
+                the filepaths, tmp_dir is the temporal directory created \
+                for saving json files when listfile_prefix is not specified.
+        """
+        assert isinstance(results, list), 'results must be a list'
+        assert len(results) == len(self), (
+            'The length of results is not equal to the dataset len: {} != {}'.
+            format(len(results), len(self)))
+
+        if save_dir is None:
+            tmp_dir = tempfile.TemporaryDirectory()
+            listfile_prefix = osp.join(tmp_dir.name, 'results')
+        else:
+            tmp_dir = None
+            listfile_prefix = osp.join(save_dir, 'results')
+        result_files = self.results2file(results, listfile_prefix)
+        return result_files, tmp_dir
 
     def evaluate(self,
-                 results,
-                 metric='mAP',
-                 logger=None,
-                 proposal_nums=(100, 300, 1000),
-                 iou_thr=0.5,
-                 scale_ranges=None):
-        """Evaluate the dataset.
-
-        Args:
-            results (list): Testing results of the dataset.
-            metric (str | list[str]): Metrics to be evaluated.
-            logger (logging.Logger | None | str): Logger used for printing
-                related information during evaluation. Default: None.
-            proposal_nums (Sequence[int]): Proposal number used for evaluating
-                recalls, such as recall@100, recall@1000.
-                Default: (100, 300, 1000).
-            iou_thr (float | list[float]): IoU threshold. Default: 0.5.
-            scale_ranges (list[tuple] | None): Scale ranges for evaluating mAP.
-                Default: None.
-        """
-
-        if not isinstance(metric, str):
-            assert len(metric) == 1
-            metric = metric[0]
-        allowed_metrics = ['mAP', 'recall']
-        if metric not in allowed_metrics:
-            raise KeyError(f'metric {metric} is not supported')
-        annotations = [self.get_ann_info(i) for i in range(len(self))]
-        eval_results = OrderedDict()
-        iou_thrs = [iou_thr] if isinstance(iou_thr, float) else iou_thr
-        if metric == 'mAP':
-            assert isinstance(iou_thrs, list)
-            mean_aps = []
-            for iou_thr in iou_thrs:
-                print_log(f'\n{"-" * 15}iou_thr: {iou_thr}{"-" * 15}')
-                mean_ap, _ = eval_map(
-                    results,
-                    annotations,
-                    scale_ranges=scale_ranges,
-                    iou_thr=iou_thr,
-                    dataset=self.CLASSES,
-                    logger=logger)
-                mean_aps.append(mean_ap)
-                eval_results[f'AP{int(iou_thr * 100):02d}'] = round(mean_ap, 3)
-            eval_results['mAP'] = sum(mean_aps) / len(mean_aps)
-        elif metric == 'recall':
-            gt_bboxes = [ann['bboxes'] for ann in annotations]
-            recalls = eval_recalls(
-                gt_bboxes, results, proposal_nums, iou_thr, logger=logger)
-            for i, num in enumerate(proposal_nums):
-                for j, iou in enumerate(iou_thrs):
-                    eval_results[f'recall@{num}@{iou}'] = recalls[i, j]
-            if recalls.shape[1] > 1:
-                ar = recalls.mean(axis=1)
-                for i, num in enumerate(proposal_nums):
-                    eval_results[f'AR@{num}'] = ar[i]
-        return eval_results
-
-    def __repr__(self):
-        """Print the number of instance number."""
-        dataset_type = 'Test' if self.test_mode else 'Train'
-        result = (f'\n{self.__class__.__name__} {dataset_type} dataset '
-                  f'with number of images {len(self)}, '
-                  f'and instance counts: \n')
-        if self.CLASSES is None:
-            result += 'Category names are not provided. \n'
-            return result
-        instance_count = np.zeros(len(self.CLASSES) + 1).astype(int)
-        # count the instance number in each image
-        for idx in range(len(self)):
-            label = self.get_ann_info(idx)['labels']
-            unique, counts = np.unique(label, return_counts=True)
-            if len(unique) > 0:
-                # add the occurrence number to each class
-                instance_count[unique] += counts
-            else:
-                # background is the last index
-                instance_count[-1] += 1
-        # create a table with category count
-        table_data = [['category', 'count'] * 5]
-        row_data = []
-        for cls, count in enumerate(instance_count):
-            if cls < len(self.CLASSES):
-                row_data += [f'{cls} [{self.CLASSES[cls]}]', f'{count}']
-            else:
-                # add the background number
-                row_data += ['-1 background', f'{count}']
-            if len(row_data) == 10:
-                table_data.append(row_data)
-                row_data = []
-        if len(row_data) >= 2:
-            if row_data[-1] == '0':
-                row_data = row_data[:-2]
-            if len(row_data) >= 2:
-                table_data.append([])
-                table_data.append(row_data)
-
-        table = AsciiTable(table_data)
-        result += table.table
-        return result
+                 **kwargs):
+        raise NotImplementedError("Custom list dataset do not support for evaluation!")
