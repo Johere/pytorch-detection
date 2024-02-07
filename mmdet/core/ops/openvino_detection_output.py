@@ -95,7 +95,9 @@ class OpenVinoDetectionOutputOp(torch.autograd.Function):
                 normalized_i=False, share_location_i=True, clip_before_nms_i=False, clip_after_nms_i=False,
                 code_type_s="CENTER_SIZE", variance_encoded_in_target_i=1):
         """Forward function of dummy onnx DetectionOutput op for openvino."""
-        return torch.rand(1, keep_top_k_i, 7)
+        return torch.rand(1, 1, keep_top_k_i, 7)
 
-
+# The output tensor contains information about filtered detections described with 7 element tuples: 
+#    [batch_id, class_id, confidence, x_1, y_1, x_2, y_2]. 
+# The first tuple with batch_id equal to -1 means end of output.
 openvino_detection_output_forward = OpenVinoDetectionOutputOp.apply

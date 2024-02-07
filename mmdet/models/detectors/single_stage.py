@@ -289,6 +289,13 @@ class SingleStageDetector(BaseDetector):
                             normalized, share_location, clip_before_nms, clip_after_nms, 
                             code_type, variance_encoded_in_target)
 
+        '''
+        [1, 1, N * keep_top_k, 7]
+        The output tensor contains information about filtered detections described with 7 element tuples: [batch_id, class_id, confidence, x_1, y_1, x_2, y_2]. 
+        The first tuple with batch_id equal to -1 means end of output.
+        '''
+        # move N dimension to the first axis, to align with most models
+        openvino__output = openvino__output.reshape(-1, keep_top_k, openvino__output.shape[-1])
         return openvino__output
 
         # return bboxes, scores, priors
@@ -343,18 +350,18 @@ class SingleStageDetector(BaseDetector):
         '''
         positive category id should start from 1.
         '''
-        labels = det_labels.reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 1)
+        labels = det_labels.reshape(batch, det_bboxes.shape[0], det_bboxes.shape[1], 1)
         labels[..., 0] = labels[..., 0] + 1
 
-        assert batch == 1, 'unsupported batchsize: {}'.format(batch)
+        # assert batch == 1, 'unsupported batchsize: {}'.format(batch)
         image_ids = torch.full_like(labels, 0)
 
-        scores = det_bboxes[:, :, -1].reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 1)
+        scores = det_bboxes[:, :, -1].reshape(batch, det_bboxes.shape[0], det_bboxes.shape[1], 1)
 
         '''
         bounding boxes range to [0, 1]
         '''
-        bboxes = det_bboxes[:, :, :4].reshape(1, det_bboxes.shape[0], det_bboxes.shape[1], 4)
+        bboxes = det_bboxes[:, :, :4].reshape(batch, det_bboxes.shape[0], det_bboxes.shape[1], 4)
         bboxes[..., 0] = bboxes[..., 0] / input_w
         bboxes[..., 1] = bboxes[..., 1] / input_h
         bboxes[..., 2] = bboxes[..., 2] / input_w
